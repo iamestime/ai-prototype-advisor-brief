@@ -240,7 +240,7 @@ function financials(facts: any) {
 
 // ---------- quotes (prototype source; swap for a licensed feed in production) ----------
 async function getQuote(ticker: string) {
-  const base: Record<string, unknown> = {
+  const base: any = {
     ticker,
     name: null,
     price: null,
@@ -289,7 +289,7 @@ async function getQuote(ticker: string) {
 }
 
 function derived(quote: any, fin: any) {
-  const out: Record<string, unknown> = {};
+  const out: any = {};
   const price = quote.price;
   const shares = fin.sharesOutstanding?.value;
   if (price && shares) {
@@ -478,7 +478,7 @@ const BLOCKS: Record<string, { title: string; prompt: string }> = {
 const BLOCK_ORDER = ["summary", "what_changed", "risks", "events", "talking_points", "questions"];
 
 function buildContext(sections: Section[], company: Company): string {
-  const parts = [`<company name="${company.name}" ticker="${company.ticker}" fiscalYearEnd="${company.fiscalYearEnd ?? ""}" />`, "<sections>"];
+  const parts = [`<company name="${company.name}" ticker="${company.ticker}" fiscalYearEnd="${company['fiscalYearEnd'] ?? ""}" />`, "<sections>"];
   for (const s of sections) parts.push(`<section id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${s.text}\n</section>`);
   parts.push("</sections>");
   return parts.join("\n");
@@ -643,7 +643,7 @@ async function handleBrief(request: Request): Promise<Response> {
         const usage = new Usage();
         const started = Date.now();
         const first = await callBlock(context, "summary", valid, usage); // primes the prompt cache
-        send("block", { name: "summary", title: BLOCKS.summary!.title, data: first, elapsedMs: Date.now() - started });
+        send("block", { name: "summary", title: BLOCKS['summary']!.title, data: first, elapsedMs: Date.now() - started });
         await Promise.all(
           BLOCK_ORDER.filter((n) => n !== "summary").map(async (n) => {
             const data = await callBlock(context, n, valid, usage).catch((e) => ({ items: [], error: String(e) }));
