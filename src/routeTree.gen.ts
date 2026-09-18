@@ -10,11 +10,18 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiPublicAdvisorAskRouteImport } from './routes/api/public/advisor-ask'
 import { Route as ApiPublicAdvisorBriefRouteImport } from './routes/api/public/advisor-brief'
+import { Route as ApiPublicAdvisorMemoryRouteImport } from './routes/api/public/advisor-memory'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicAdvisorAskRoute = ApiPublicAdvisorAskRouteImport.update({
+  id: '/api/public/advisor-ask',
+  path: '/api/public/advisor-ask',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiPublicAdvisorBriefRoute = ApiPublicAdvisorBriefRouteImport.update({
@@ -22,31 +29,57 @@ const ApiPublicAdvisorBriefRoute = ApiPublicAdvisorBriefRouteImport.update({
   path: '/api/public/advisor-brief',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicAdvisorMemoryRoute = ApiPublicAdvisorMemoryRouteImport.update({
+  id: '/api/public/advisor-memory',
+  path: '/api/public/advisor-memory',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/public/advisor-ask': typeof ApiPublicAdvisorAskRoute
   '/api/public/advisor-brief': typeof ApiPublicAdvisorBriefRoute
+  '/api/public/advisor-memory': typeof ApiPublicAdvisorMemoryRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/public/advisor-ask': typeof ApiPublicAdvisorAskRoute
   '/api/public/advisor-brief': typeof ApiPublicAdvisorBriefRoute
+  '/api/public/advisor-memory': typeof ApiPublicAdvisorMemoryRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/public/advisor-ask': typeof ApiPublicAdvisorAskRoute
   '/api/public/advisor-brief': typeof ApiPublicAdvisorBriefRoute
+  '/api/public/advisor-memory': typeof ApiPublicAdvisorMemoryRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/public/advisor-brief'
+  fullPaths:
+    | '/'
+    | '/api/public/advisor-ask'
+    | '/api/public/advisor-brief'
+    | '/api/public/advisor-memory'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/public/advisor-brief'
-  id: '__root__' | '/' | '/api/public/advisor-brief'
+  to:
+    | '/'
+    | '/api/public/advisor-ask'
+    | '/api/public/advisor-brief'
+    | '/api/public/advisor-memory'
+  id:
+    | '__root__'
+    | '/'
+    | '/api/public/advisor-ask'
+    | '/api/public/advisor-brief'
+    | '/api/public/advisor-memory'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiPublicAdvisorAskRoute: typeof ApiPublicAdvisorAskRoute
   ApiPublicAdvisorBriefRoute: typeof ApiPublicAdvisorBriefRoute
+  ApiPublicAdvisorMemoryRoute: typeof ApiPublicAdvisorMemoryRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -58,6 +91,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/advisor-ask': {
+      id: '/api/public/advisor-ask'
+      path: '/api/public/advisor-ask'
+      fullPath: '/api/public/advisor-ask'
+      preLoaderRoute: typeof ApiPublicAdvisorAskRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/advisor-brief': {
       id: '/api/public/advisor-brief'
       path: '/api/public/advisor-brief'
@@ -65,12 +105,21 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicAdvisorBriefRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/advisor-memory': {
+      id: '/api/public/advisor-memory'
+      path: '/api/public/advisor-memory'
+      fullPath: '/api/public/advisor-memory'
+      preLoaderRoute: typeof ApiPublicAdvisorMemoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiPublicAdvisorAskRoute: ApiPublicAdvisorAskRoute,
   ApiPublicAdvisorBriefRoute: ApiPublicAdvisorBriefRoute,
+  ApiPublicAdvisorMemoryRoute: ApiPublicAdvisorMemoryRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

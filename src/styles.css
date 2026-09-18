@@ -5,17 +5,10 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * Design system definition.
- *
- * The @theme inline block maps CSS custom properties to Tailwind utility
- * classes (e.g. --color-primary -> bg-primary, text-primary).
- *
- * The :root and .dark blocks define the actual color values using oklch.
- * All colors MUST use oklch format.
- *
- * To add a new semantic color:
- * 1. Add the variable to :root (light value) and .dark (dark value)
- * 2. Register it in @theme inline as --color-<name>: var(--<name>)
+ * Advisor Brief design system. Tokens follow the Figma file "Advisor Brief - AI Prototype":
+ * deep navy surfaces, one gold accent for actions and citations, green for verified, mono for figures.
+ * Light mode keeps the same structure on paper white with the gold darkened for contrast.
+ * The @theme inline block maps the tokens to Tailwind utilities (bg-surface, text-ink-2, border-line ...).
  */
 
 @theme inline {
@@ -34,33 +27,56 @@
   --color-ink-2: var(--ink-2);
   --color-ink-3: var(--ink-3);
   --color-accent: var(--accent);
-  --color-accent-2: var(--accent-2);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
   --color-good: var(--good);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
+  --color-navy: var(--navy);
   --color-border: var(--line);
   --color-input: var(--line);
   --color-ring: var(--accent);
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 :root {
   --radius: 0.75rem;
-  --background: #0b1220;
-  --surface: #121b2e;
-  --surface-2: #182339;
-  --line: #22304a;
+  --background: #f4f6fa;
+  --surface: #ffffff;
+  --surface-2: #eef2f8;
+  --line: #e1e6ef;
+  --ink: #0b1220;
+  --foreground: #0b1220;
+  --ink-2: #4b5568;
+  --ink-3: #7c879c;
+  --accent: #b8842a;
+  --accent-ink: #1a1405;
+  --accent-soft: rgba(184, 132, 42, 0.12);
+  --good: #178f55;
+  --warn: #b7791f;
+  --bad: #c53939;
+  --navy: #26345a;
+  color-scheme: light;
+}
+
+.dark {
+  --background: #0a1020;
+  --surface: #0f1729;
+  --surface-2: #16203a;
+  --line: #1f2a44;
   --ink: #eef2f8;
   --foreground: #eef2f8;
-  --ink-2: #aab4c6;
-  --ink-3: #7c879c;
-  --accent: #3987e5;
-  --accent-2: #d95926;
-  --good: #2fbf71;
+  --ink-2: #a9b4c8;
+  --ink-3: #6f7b93;
+  --accent: #e9b860;
+  --accent-ink: #1a1405;
+  --accent-soft: rgba(233, 184, 96, 0.14);
+  --good: #2ed17a;
   --warn: #f2b134;
-  --bad: #e35d5d;
+  --bad: #ef6b6b;
+  --navy: #2b3a5c;
+  color-scheme: dark;
 }
 
 @layer base {
@@ -75,6 +91,7 @@
     font-family: var(--font-sans);
     font-size: 15px;
     line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
   }
 }
 
@@ -82,27 +99,82 @@
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 18px 20px;
+  padding: 18px 22px;
+}
+
+@utility ab-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
 }
 
 @utility ab-cite {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--font-mono);
   font-size: 11px;
+  line-height: 18px;
   color: var(--accent);
-  background: rgba(57, 135, 229, 0.12);
-  border: 1px solid rgba(57, 135, 229, 0.3);
-  padding: 1px 7px;
-  border-radius: 999px;
-  margin: 2px 4px 2px 0;
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  padding: 1px 9px;
+  border-radius: 6px;
+  margin: 2px 6px 2px 0;
   text-decoration: none;
+  cursor: pointer;
+  &::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 1px;
+    background: var(--accent);
+    flex: none;
+  }
   &:hover {
-    background: rgba(57, 135, 229, 0.25);
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+}
+
+@utility ab-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 18px;
+  padding: 1px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+@utility ab-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  font-size: 14px;
+  border-radius: 8px;
+  padding: 9px 16px;
+  transition: filter 120ms ease;
+  &:hover {
+    filter: brightness(1.05);
+  }
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
 }
 
 @utility ab-skeleton {
-  height: 14px;
+  height: 12px;
   background: linear-gradient(90deg, var(--surface-2), var(--line), var(--surface-2));
   background-size: 200% 100%;
   animation: ab-sh 1.4s infinite;
@@ -111,11 +183,12 @@
 }
 
 @utility ab-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--accent);
   animation: ab-pulse 1.2s infinite;
+  flex: none;
 }
 
 @utility tabular {
@@ -141,3 +214,17 @@
   }
 }
 
+@keyframes ab-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility ab-in {
+  animation: ab-in 240ms ease-out both;
+}
