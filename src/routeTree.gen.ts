@@ -10,33 +10,43 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiPublicAdvisorBriefRouteImport } from './routes/api/public/advisor-brief'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicAdvisorBriefRoute = ApiPublicAdvisorBriefRouteImport.update({
+  id: '/api/public/advisor-brief',
+  path: '/api/public/advisor-brief',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/public/advisor-brief': typeof ApiPublicAdvisorBriefRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/public/advisor-brief': typeof ApiPublicAdvisorBriefRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/public/advisor-brief': typeof ApiPublicAdvisorBriefRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/api/public/advisor-brief'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/api/public/advisor-brief'
+  id: '__root__' | '/' | '/api/public/advisor-brief'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiPublicAdvisorBriefRoute: typeof ApiPublicAdvisorBriefRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +58,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/advisor-brief': {
+      id: '/api/public/advisor-brief'
+      path: '/api/public/advisor-brief'
+      fullPath: '/api/public/advisor-brief'
+      preLoaderRoute: typeof ApiPublicAdvisorBriefRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiPublicAdvisorBriefRoute: ApiPublicAdvisorBriefRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
