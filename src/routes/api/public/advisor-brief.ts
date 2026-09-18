@@ -1,934 +1,76 @@
 // Advisor Brief: one endpoint that streams a cited stock briefing over Server Sent Events.
-// GET /api/public/advisor-brief?q=NVDA
+// GET /api/public/advisor-brief?q=NVDA[&session=<id>][&fresh=1]
 //
-// Data: SEC EDGAR (filings, XBRL company facts), Yahoo Finance chart endpoint (prototype quote source).
-// Intelligence: Lovable AI gateway (no vendor API key), one streamed NDJSON call, citation validation.
-// Validation: an independent agent reviews every claim against the cited filing text (see the validation section).
-// Env: LOVABLE_API_KEY (Lovable AI), GEMINI_API_KEY and OPENAI_API_KEY (optional fallbacks), AI_MODEL, VALIDATOR_MODEL,
-//      VALIDATION_POLICY (exclude|flag), UNVERIFIED_POLICY (flag|hide), RESEARCH_TIMEOUT_MS, VALIDATOR_TIMEOUT_MS, EDGAR_USER_AGENT.
+// Pipeline (multi agent, see docs/ARCHITECTURE.md):
+//   data        SEC EDGAR filings, XBRL company facts, quote adapter, section extraction   (edgar.ts)
+//   memory      briefing replay, retrieval index, conversation turns                       (memory.ts)
+//   research    one streamed model call writes six cited blocks                            (research.ts)
+//   validation  a second model reviews every claim against only the cited text             (validation.ts)
+//   guardrails  input, rate, injection, output screening, reported to the UI               (guardrails.ts)
+//   retrieval   chunk, embed, index the filings for follow up questions                    (retrieval.ts)
+//   digest      no model fallback built from structured data                               (digest.ts)
+// Models: Gemini through GEMINI_API_KEY (OpenAI as optional fallback). Nothing routes through a platform gateway.
+//
+// Events: resolved, filings, quote, financials, sections, digest, memory, status, block, validation,
+//         validation_summary, guardrails, index, research_failed, usage, done, error.
 import { createFileRoute } from "@tanstack/react-router";
+import { CORS, DISCLAIMER, readEnv, type Cfg } from "../../../server/advisor/config";
+import { configureEdgar, financials, derived, type Section } from "../../../server/advisor/edgar";
+import { loadCompany, loadSections } from "../../../server/advisor/pipeline";
+import { BLOCKS, BLOCK_ORDER, Usage, buildContext, streamBriefing, regenerateBlock } from "../../../server/advisor/research";
+import { validateBlock, summarizeValidation, claimItems, claimText, type BlockValidation } from "../../../server/advisor/validation";
+import { buildDigest } from "../../../server/advisor/digest";
+import { briefGuardrails, clientKey, countInjectionLines, rateLimit, screenText, validateQuery } from "../../../server/advisor/guardrails";
+import { buildIndex } from "../../../server/advisor/retrieval";
+import { getStore, type BriefingRecord } from "../../../server/advisor/memory";
+import { AiUnavailable, clientReason, logAiFailure } from "../../../server/advisor/providers";
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-};
-
-// Env is injected per request on the server runtime, so it is read inside the handler.
-type Cfg = {
-  EDGAR_UA: string;
-  AI_MODEL: string;
-  VALIDATOR_MODEL: string;
-  VALIDATION_POLICY: "exclude" | "flag";
-  UNVERIFIED_POLICY: "flag" | "hide";
-  RESEARCH_TIMEOUT_MS: number;
-  VALIDATOR_TIMEOUT_MS: number;
-  providers: Provider[];
-};
-type Provider = { name: string; url: string; key: string; mapModel: (m: string) => string };
-let CFG: Cfg = {
-  EDGAR_UA: "AdvisorBrief prototype contact@example.com", AI_MODEL: "google/gemini-2.5-flash", VALIDATOR_MODEL: "google/gemini-2.5-flash",
-  VALIDATION_POLICY: "exclude", UNVERIFIED_POLICY: "flag", RESEARCH_TIMEOUT_MS: 120000, VALIDATOR_TIMEOUT_MS: 45000, providers: [],
-};
-function readEnv(): Cfg {
-  const e = process.env;
-  // Provider chain: every configured provider is tried in order; a 402 (credits), 429 (rate limit), or 5xx moves to the next.
-  // Lovable AI needs no key management; a Gemini API key (Google AI Studio) or an OpenAI key removes the single point of failure.
-  const providers: Provider[] = [];
-  if (e["LOVABLE_API_KEY"]) providers.push({ name: "lovable", url: "https://ai.gateway.lovable.dev/v1/chat/completions", key: e["LOVABLE_API_KEY"], mapModel: (m) => m });
-  if (e["GEMINI_API_KEY"]) providers.push({ name: "gemini", url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", key: e["GEMINI_API_KEY"], mapModel: (m) => m.replace(/^google\//, "") });
-  if (e["OPENAI_API_KEY"]) providers.push({ name: "openai", url: "https://api.openai.com/v1/chat/completions", key: e["OPENAI_API_KEY"], mapModel: (m) => (m.startsWith("openai/") ? m.slice(7) : e["OPENAI_MODEL"] ?? "gpt-4o-mini") });
-  return {
-    EDGAR_UA: e["EDGAR_USER_AGENT"] ?? "AdvisorBrief prototype contact@example.com",
-    AI_MODEL: e["AI_MODEL"] ?? AI_MODEL_DEFAULT,
-    VALIDATOR_MODEL: e["VALIDATOR_MODEL"] ?? VALIDATOR_MODEL_DEFAULT,
-    VALIDATION_POLICY: e["VALIDATION_POLICY"] === "flag" ? "flag" : "exclude",
-    UNVERIFIED_POLICY: e["UNVERIFIED_POLICY"] === "hide" ? "hide" : "flag",
-    RESEARCH_TIMEOUT_MS: Number(e["RESEARCH_TIMEOUT_MS"] ?? 120000),
-    VALIDATOR_TIMEOUT_MS: Number(e["VALIDATOR_TIMEOUT_MS"] ?? 45000),
-    providers,
-  };
+function json(status: number, body: unknown) {
+  return new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json" } });
 }
 
-const DISCLAIMER =
-  "For internal advisor preparation only. Not investment advice, not a recommendation, not for distribution to clients. " +
-  "Generated from public SEC filings and market data as of the timestamps shown. Verify against the cited filing before relying on any statement.";
-
-const SECTION_CHAR_BUDGET: Record<string, number> = { "Item 1": 18000, "Item 1A": 30000, "Item 7": 45000, "Item 2": 45000, "8-K": 6000 };
-
-// ---------- small in-memory cache (per warm instance) ----------
-const memo = new Map<string, { at: number; value: unknown }>();
-async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
-  const hit = memo.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.value as T;
-  const value = await fn();
-  memo.set(key, { at: Date.now(), value });
-  return value;
-}
-
-// ---------- EDGAR ----------
-let lastEdgar = 0;
-async function edgarGet(url: string, asJson = true): Promise<any> {
-  const wait = 120 - (Date.now() - lastEdgar); // under 10 requests per second
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastEdgar = Date.now();
-  const r = await fetch(url, { headers: { "User-Agent": CFG.EDGAR_UA, "Accept-Encoding": "gzip, deflate" } });
-  if (!r.ok) throw new Error(`EDGAR ${r.status} for ${url}`);
-  return asJson ? r.json() : r.text();
-}
-
-type Company = { cik: number; ticker: string; name: string; [k: string]: unknown };
-async function resolve(query: string): Promise<Company> {
-  const q = query.trim();
-  if (!q) throw new Error("Empty query");
-  const table = await cached("tickers", 24 * 3600e3, () => edgarGet("https://www.sec.gov/files/company_tickers.json"));
-  const rows = Object.values(table) as Array<{ cik_str: number; ticker: string; title: string }>;
-  const qu = q.toUpperCase();
-  const exact = rows.find((r) => r.ticker.toUpperCase() === qu);
-  if (exact) return { cik: Number(exact.cik_str), ticker: exact.ticker, name: exact.title };
-  const ql = q.toLowerCase();
-  const hits = rows.filter((r) => r.title.toLowerCase().includes(ql))
-    .sort((a, b) => Number(!a.title.toLowerCase().startsWith(ql)) - Number(!b.title.toLowerCase().startsWith(ql)) || a.title.length - b.title.length);
-  if (hits.length) return { cik: Number(hits[0].cik_str), ticker: hits[0].ticker, name: hits[0].title };
-  throw new Error(`No SEC registrant matches '${query}'`);
-}
-
-async function submissions(cik: number): Promise<any> {
-  return cached(`sub_${cik}`, 3600e3, async () => {
-    const pad = String(cik).padStart(10, "0");
-    const data = await edgarGet(`https://data.sec.gov/submissions/CIK${pad}.json`);
-    const rec = data.filings.recent;
-    for (const extra of data.filings.files ?? []) {
-      if (rec.form.includes("10-K") && rec.form.includes("10-Q")) break;
-      const page = await edgarGet("https://data.sec.gov/submissions/" + extra.name);
-      for (const [k, v] of Object.entries(page)) if (Array.isArray(v) && Array.isArray(rec[k])) rec[k].push(...(v as unknown[]));
-    }
-    return data;
-  });
-}
-
-type Filing = { form: string; filingDate: string; reportDate: string; accession: string; primaryDocument: string; items: string; url: string; indexUrl: string };
-function selectFilings(sub: any, cik: number, days8k = 90) {
-  const rec = sub.filings.recent;
-  const n = rec.accessionNumber.length;
-  const table: Filing[] = [];
-  for (let i = 0; i < n; i++) {
-    const acc = rec.accessionNumber[i];
-    const accNo = acc.replace(/-/g, "");
-    table.push({
-      form: rec.form[i], filingDate: rec.filingDate[i], reportDate: rec.reportDate?.[i] ?? "", accession: acc,
-      primaryDocument: rec.primaryDocument[i], items: rec.items?.[i] ?? "",
-      url: `https://www.sec.gov/Archives/edgar/data/${cik}/${accNo}/${rec.primaryDocument[i]}`,
-      indexUrl: `https://www.sec.gov/Archives/edgar/data/${cik}/${accNo}/`,
-    });
-  }
-  const cutoff = new Date(Date.now() - days8k * 864e5).toISOString().slice(0, 10);
-  return {
-    company: { cik, name: sub.name, sic: sub.sic, sicDescription: sub.sicDescription, fiscalYearEnd: sub.fiscalYearEnd, stateOfIncorporation: sub.stateOfIncorporation, exchanges: sub.exchanges, tickers: sub.tickers },
-    "10-K": table.find((f) => f.form === "10-K") ?? null,
-    "10-Q": table.find((f) => f.form === "10-Q") ?? null,
-    "8-K": table.filter((f) => f.form === "8-K" && f.filingDate >= cutoff),
-  };
-}
-
-const document_ = (f: Filing) => cached(`doc_${f.accession}`, 6 * 3600e3, () => edgarGet(f.url, false) as Promise<string>);
-const companyFacts = (cik: number) => cached(`facts_${cik}`, 3600e3, () => edgarGet(`https://data.sec.gov/api/xbrl/companyfacts/CIK${String(cik).padStart(10, "0")}.json`));
-
-// ---------- XBRL financials ----------
-const REVENUE_TAGS = ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet", "RevenueFromContractWithCustomerIncludingAssessedTax", "InterestAndDividendIncomeOperating", "TotalRevenuesAndOtherIncome"];
-const NET_INCOME_TAGS = ["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"];
-const EPS_TAGS = ["EarningsPerShareDiluted", "EarningsPerShareBasic"];
-const DIVIDEND_TAGS = ["CommonStockDividendsPerShareDeclared", "CommonStockDividendsPerShareCashPaid"];
-
-function quarterlySeries(facts: any, tags: string[], units = ["USD"], quarters = 8) {
-  const gaap = facts?.facts?.["us-gaap"] ?? {};
-  let tag: string | null = null, vals: any[] = [];
-  outer: for (const t of tags) for (const u of units) { const v = gaap[t]?.units?.[u]; if (v?.length) { tag = t; vals = v; break outer; } }
-  if (!vals.length) return { tag: null, points: [] as any[] };
-  const q = new Map<string, any>(), y = new Map<number, any>();
-  for (const v of vals) {
-    const fr: string = v.frame ?? "";
-    let m = /^CY(\d{4})Q([1-4])$/.exec(fr);
-    if (m) { q.set(`${m[1]}-${m[2]}`, v); continue; }
-    m = /^CY(\d{4})$/.exec(fr);
-    if (m) y.set(Number(m[1]), v);
-  }
-  for (const [year, yv] of y) {
-    if (!q.has(`${year}-4`) && [1, 2, 3].every((i) => q.has(`${year}-${i}`))) {
-      const q4 = yv.val - [1, 2, 3].reduce((a, i) => a + q.get(`${year}-${i}`).val, 0);
-      q.set(`${year}-4`, { val: q4, end: yv.end, form: yv.form, filed: yv.filed, derived: true });
-    }
-  }
-  const keys = [...q.keys()].sort().slice(-quarters);
-  return {
-    tag,
-    points: keys.map((k) => { const [yr, qq] = k.split("-"); const v = q.get(k); return { frame: `CY${yr}Q${qq}`, label: `Q${qq} ${yr}`, periodEnd: v.end, value: v.val, form: v.form, filed: v.filed, derived: !!v.derived }; }),
-  };
-}
-
-function financials(facts: any) {
-  const revenue = quarterlySeries(facts, REVENUE_TAGS);
-  const netIncome = quarterlySeries(facts, NET_INCOME_TAGS);
-  const eps = quarterlySeries(facts, EPS_TAGS, ["USD/shares"]);
-  const dividends = quarterlySeries(facts, DIVIDEND_TAGS, ["USD/shares"], 4);
-  const sh = facts?.facts?.dei?.EntityCommonStockSharesOutstanding?.units?.shares as any[] | undefined;
-  const best = sh?.length ? sh.reduce((a, b) => ((b.end ?? "") + (b.filed ?? "") > (a.end ?? "") + (a.filed ?? "") ? b : a)) : null;
-  const sharesOutstanding = best ? { tag: "EntityCommonStockSharesOutstanding", value: best.val, asOf: best.end, filed: best.filed, form: best.form } : null;
-  const latestEnd = revenue.points.at(-1)?.periodEnd;
-  const recent = (s: { points: any[] }) => {
-    if (s.points.length < 4 || !latestEnd) return false;
-    const gap = (Date.parse(latestEnd) - Date.parse(s.points.at(-1).periodEnd)) / 864e5;
-    return Number.isFinite(gap) && gap <= 100;
-  };
-  const sum4 = (s: { points: any[] }) => s.points.slice(-4).reduce((a, p) => a + p.value, 0);
-  return {
-    revenue, netIncome, eps, dividends, sharesOutstanding,
-    ttmEps: recent(eps) ? sum4(eps) : null,
-    ttmDividend: recent(dividends) ? sum4(dividends) : null,
-    source: "SEC XBRL company facts API",
-  };
-}
-
-// ---------- quotes (prototype source; swap for a licensed feed in production) ----------
-async function getQuote(ticker: string) {
-  const base: Record<string, unknown> = { ticker, name: null, price: null, previousClose: null, change: null, changePct: null, dayLow: null, dayHigh: null, week52Low: null, week52High: null, volume: null, exchange: null, currency: "USD", asOf: null, source: "unavailable", stale: false };
-  try {
-    const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=5d&interval=1d`, { headers: { "User-Agent": "Mozilla/5.0 (AdvisorBrief prototype)" } });
-    if (!r.ok) throw new Error(`chart ${r.status}`);
-    const m = (await r.json()).chart.result[0].meta;
-    Object.assign(base, {
-      name: m.longName ?? m.shortName ?? null, price: m.regularMarketPrice ?? null, previousClose: m.chartPreviousClose ?? null,
-      dayLow: m.regularMarketDayLow ?? null, dayHigh: m.regularMarketDayHigh ?? null, week52Low: m.fiftyTwoWeekLow ?? null, week52High: m.fiftyTwoWeekHigh ?? null,
-      volume: m.regularMarketVolume ?? null, exchange: m.exchangeName ?? null, currency: m.currency ?? "USD",
-      asOf: m.regularMarketTime ? new Date(m.regularMarketTime * 1000).toISOString() : null, source: "Yahoo Finance (chart endpoint)",
-    });
-    if (base.price != null && base.previousClose) {
-      base.change = Number(((base.price as number) - (base.previousClose as number)).toFixed(4));
-      base.changePct = Number((100 * (base.change as number) / (base.previousClose as number)).toFixed(3));
-    }
-  } catch (e) {
-    base.errors = [String(e)];
-  }
-  return base;
-}
-
-function derived(quote: any, fin: any) {
-  const out: Record<string, unknown> = {};
-  const price = quote.price, shares = fin.sharesOutstanding?.value;
-  if (price && shares) { out.marketCap = price * shares; out.marketCapBasis = `price x ${shares.toLocaleString()} shares (dei:EntityCommonStockSharesOutstanding as of ${fin.sharesOutstanding.asOf})`; }
-  if (price && fin.ttmEps) { out.trailingPE = fin.ttmEps > 0 ? price / fin.ttmEps : null; out.ttmEps = fin.ttmEps; }
-  if (price && fin.ttmDividend != null) { out.dividendYield = fin.ttmDividend / price; out.ttmDividend = fin.ttmDividend; }
-  return out;
-}
-
-// ---------- extraction ----------
-const EIGHT_K_ITEMS: Record<string, string> = { "1.01": "Entry into a material agreement", "1.02": "Termination of a material agreement", "1.05": "Material cybersecurity incident", "2.01": "Completion of acquisition or disposition", "2.02": "Results of operations (earnings release)", "2.03": "Creation of a direct financial obligation", "2.05": "Costs associated with exit or disposal", "2.06": "Material impairment", "3.01": "Delisting or failure to satisfy listing rule", "3.02": "Unregistered sale of equity", "4.01": "Change in auditor", "4.02": "Non reliance on prior financials", "5.01": "Change in control", "5.02": "Officer or director change, compensation", "5.03": "Amendment to articles or bylaws", "5.07": "Shareholder vote results", "7.01": "Regulation FD disclosure", "8.01": "Other events", "9.01": "Financial statements and exhibits" };
-const ITEM_TITLES: Record<string, string> = { "Item 1": "Business", "Item 1A": "Risk Factors", "Item 7": "Management's Discussion and Analysis", "Item 2": "Management's Discussion and Analysis (10-Q)" };
-
-type Section = { id: string; form: string; filingDate: string; item: string; title: string; text: string; url: string; chars: number; truncated: boolean; accession: string; fetchedAt: string; meta: Record<string, unknown> };
-
-function htmlToText(html: string): string {
-  let t = html.replace(/<ix:header[\s\S]*?<\/ix:header>/gi, "").replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, "");
-  t = t.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|tr|li|h[1-6]|table|td|th|span)>/gi, "\n").replace(/<[^>]+>/g, "");
-  t = t.replace(/&nbsp;|&#160;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#8217;|&rsquo;/g, "’").replace(/&#8220;|&ldquo;/g, "“").replace(/&#8221;|&rdquo;/g, "”").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)));
-  return t.replace(/ /g, " ").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
-}
-
-function itemPositions(text: string): Array<[string, number, string]> {
-  const out: Array<[string, number, string]> = [];
-  const re = /^\s*item[\s  ]*(\d{1,2}[a-c]?)\s*[.:\-–—]?\s*(.*)$/gim;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    const tail = m[2].trim();
-    if (/^(of|in|to|and|through)\b/i.test(tail)) continue;
-    out.push([`Item ${m[1].toUpperCase()}`, m.index, tail]);
-  }
-  return out;
-}
-
-function extractItem(text: string, item: string, prefer?: string): string | null {
-  const pos = itemPositions(text);
-  let best: string | null = null;
-  pos.forEach(([name, start, tail], i) => {
-    if (name !== item) return;
-    if (prefer && !tail.toLowerCase().includes(prefer.toLowerCase())) return;
-    const end = i + 1 < pos.length ? pos[i + 1][1] : text.length;
-    const body = text.slice(start, end);
-    if (best === null || body.length > best.length) best = body;
-  });
-  return best && (best as string).trim().length > 400 ? (best as string).trim() : null;
-}
-
-function budget(text: string, key: string): [string, boolean] {
-  const limit = SECTION_CHAR_BUDGET[key] ?? 20000;
-  return text.length <= limit ? [text, false] : [text.slice(0, limit) + "\n[... section truncated for the prototype token budget ...]", true];
-}
-
-function section(form: string, f: Filing, item: string, title: string, body: string, key: string, meta: Record<string, unknown> = {}): Section {
-  const [text, truncated] = budget(body, key);
-  return { id: `${form}|${f.filingDate}|${item}`, form, filingDate: f.filingDate, item, title, text, url: f.url, chars: text.length, truncated, accession: f.accession, fetchedAt: new Date().toISOString(), meta };
-}
-
-function sections10k(html: string, f: Filing): Section[] {
-  const text = htmlToText(html);
-  const out: Section[] = [];
-  for (const item of ["Item 1", "Item 1A", "Item 7"]) { const b = extractItem(text, item); if (b) out.push(section("10-K", f, item, ITEM_TITLES[item], b, item, { reportDate: f.reportDate })); }
-  if (!out.length) out.push(section("10-K", f, "Document", "Annual report (unsectioned)", text, "Item 7"));
-  return out;
-}
-function sections10q(html: string, f: Filing): Section[] {
-  const text = htmlToText(html);
-  const out: Section[] = [];
-  const mdna = extractItem(text, "Item 2", "Management") ?? extractItem(text, "Item 2");
-  if (mdna) out.push(section("10-Q", f, "Item 2", ITEM_TITLES["Item 2"], mdna, "Item 2", { reportDate: f.reportDate }));
-  const ra = extractItem(text, "Item 1A");
-  if (ra) out.push(section("10-Q", f, "Item 1A", "Risk Factors (quarterly update)", ra, "Item 1A"));
-  if (!out.length) out.push(section("10-Q", f, "Document", "Quarterly report (unsectioned)", text, "Item 2"));
-  return out;
-}
-function section8k(html: string, f: Filing): Section {
-  let text = htmlToText(html);
-  const pos = itemPositions(text);
-  if (pos.length) text = text.slice(pos[0][1]);
-  const codes = (f.items ?? "").split(",").map((c) => c.trim()).filter(Boolean);
-  const labels = codes.map((c) => `${c} ${EIGHT_K_ITEMS[c] ?? ""}`.trim());
-  return section("8-K", f, "Items " + codes.join(","), labels.join("; ") || "Current report", text, "8-K", { itemCodes: codes, itemLabels: labels });
-}
-
-// ---------- Intelligence layer: Lovable AI gateway, one streamed call, no vendor API key ----------
-// Intelligence layer (SYSTEM, BLOCKS, BLOCK_ORDER, buildContext, validateCitations, Usage, streamBriefing,
-// regenerateBlock). No vendor API key: the Lovable AI gateway is called with LOVABLE_API_KEY.
-//
-// Design:
-// - One request carries the filing context once and asks for all six blocks as NDJSON: one JSON object per line,
-//   each a complete block. The response is streamed, so each block is validated and sent to the browser the
-//   moment its line closes. One call instead of six cuts input tokens by roughly 6x and needs no prompt cache.
-// - Any block that is missing or malformed after the stream ends is regenerated with a small targeted call.
-// - Citations are validated against the section ids that were sent. Anything else is dropped and counted.
-// - Model is configurable (AI_MODEL). Default is Gemini 2.5 Pro for reasoning quality over long filings;
-//   google/gemini-2.5-flash is the fast, cheap option for a live room.
-
-const AI_GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
-// Flash puts the first block on screen in seconds; set AI_MODEL=google/gemini-2.5-pro for deeper reading at 30 to 40 seconds to first block.
-const AI_MODEL_DEFAULT = "google/gemini-2.5-flash";
-const VALIDATOR_MODEL_DEFAULT = "google/gemini-2.5-flash";
-
-const SYSTEM = `You are a senior equity research associate preparing a private briefing for a wealth management advisor who has a client call in ten minutes.
-
-Rules you never break:
-1. Use only the filing sections provided between <sections> tags. No outside knowledge about the company, its stock price, or events after the filings.
-2. Every claim carries citations: the exact section ids given in the id attribute. Never invent an id.
-3. Do not state a financial figure unless it appears in the sections. Quote figures as the filing states them, with the period.
-4. Plain, direct American English. No hedging filler. No investment advice, no buy or sell language, no price targets.
-5. Output format is NDJSON: exactly one JSON object per line, one line per block, in the order requested, nothing else. No markdown fences, no commentary, no blank lines between objects.`;
-
-const BLOCKS: Record<string, { title: string; spec: string }> = {
-  summary: {
-    title: "60 second summary",
-    spec: `The 60 second summary an advisor reads before the call. Four to five sentences across two or three paragraphs: what the company does, how it makes money, how the most recent quarter went in the filing's own terms, and the one thing management says it is focused on.
-Shape: {"block":"summary","paragraphs":[{"text":"...","citations":["<section id>"]}]}`,
-  },
-  what_changed: {
-    title: "What changed since last quarter",
-    spec: `From the most recent 10-Q MD&A (and the 10-K for comparison), the four to six most important changes an advisor should know: growth drivers, margin moves, guidance or outlook language, capital return, balance sheet, segment shifts. Each item one or two sentences with the specific figures the filing gives.
-Shape: {"block":"what_changed","items":[{"text":"...","citations":["<section id>"]}]}`,
-  },
-  risks: {
-    title: "Top risks",
-    spec: `From the risk factor sections, the four or five risks that matter most to a long term shareholder right now, ranked. Prefer risks specific to this company over generic boilerplate. Title of five words or fewer, then two sentences in plain English on why it matters.
-Shape: {"block":"risks","items":[{"title":"...","severity":"high|medium|low","text":"...","citations":["<section id>"]}]}`,
-  },
-  events: {
-    title: "Recent 8-K events",
-    spec: `For every 8-K section provided, one timeline entry: filing date, a headline of ten words or fewer, and one or two sentences on why an advisor would care. If an 8-K is routine (earnings release notice, exhibit only), say so in one short sentence. Newest first. If there are no 8-K sections, items is an empty list.
-Shape: {"block":"events","items":[{"date":"YYYY-MM-DD","headline":"...","why_it_matters":"...","citations":["<section id>"]}]}`,
-  },
-  talking_points: {
-    title: "Talking points for the client conversation",
-    spec: `Five talking points an advisor can say out loud to a client today. Each one sentence, conversational, specific, grounded in the filings, no jargon. Cover the business, the latest quarter, a risk to acknowledge, capital return or balance sheet, and what to watch next quarter.
-Shape: {"block":"talking_points","items":[{"text":"...","citations":["<section id>"]}]}`,
-  },
-  questions: {
-    title: "Questions the client may ask",
-    spec: `Four questions a sharp client is likely to ask, each with a two sentence answer the advisor can give from the filings. Include at least one uncomfortable question.
-Shape: {"block":"questions","items":[{"question":"...","answer":"...","citations":["<section id>"]}]}`,
-  },
-};
-const BLOCK_ORDER = ["summary", "what_changed", "risks", "events", "talking_points", "questions"];
-
-function buildContext(sections: Section[], company: Company): string {
-  const parts = [`<company name="${company.name}" ticker="${company.ticker}" fiscalYearEnd="${company["fiscalYearEnd"] ?? ""}" />`, "<sections>"];
-  for (const s of sections) parts.push(`<section id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${s.text}\n</section>`);
-  parts.push("</sections>");
-  return parts.join("\n");
-}
-
-function briefingRequest(names: string[]): string {
-  const specs = names.map((n, i) => `${i + 1}. ${n}\n${BLOCKS[n]!.spec}`).join("\n\n");
-  return `Write these ${names.length} briefing blocks, one JSON object per line, in this order:\n\n${specs}\n\nSection ids you may cite are exactly the id attributes in <sections>. Begin with the first line now.`;
-}
-
-function validateCitations(block: any, valid: Set<string>): [any, number] {
-  let dropped = 0;
-  for (const key of ["paragraphs", "items"])
-    for (const item of block?.[key] ?? []) {
-      const c: string[] = Array.isArray(item.citations) ? item.citations : [];
-      const kept = c.filter((x) => valid.has(x));
-      dropped += c.length - kept.length;
-      item.citations = kept;
-    }
-  return [block, dropped];
-}
-
-function tryParseBlock(line: string): any | null {
-  const t = line.trim().replace(/^```(?:json)?\s*|\s*```$/g, "").replace(/^[\-\*\d\.\)\s]+(?=\{)/, "");
-  if (!t.startsWith("{")) return null;
-  try {
-    const obj = JSON.parse(t);
-    return obj && typeof obj.block === "string" && BLOCKS[obj.block] ? obj : null;
-  } catch {
-    return null;
-  }
-}
-
-class Usage {
-  calls = 0;
-  input = 0;
-  output = 0;
-  model = "";
-  provider = "";
-  add(u: any) {
-    this.calls++;
-    this.input += u?.prompt_tokens ?? 0;
-    this.output += u?.completion_tokens ?? 0;
-  }
-  toDict() {
-    return { calls: this.calls, inputTokens: this.input, outputTokens: this.output, cacheWriteTokens: 0, cacheReadTokens: 0, model: this.model, provider: this.provider, mode: "live" };
-  }
-}
-
-class AiUnavailable extends Error {
-  attempts: string[];
-  constructor(attempts: string[]) {
-    super(attempts.length ? `AI unavailable: ${attempts.join("; ")}` : "No AI provider is configured (set LOVABLE_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY).");
-    this.attempts = attempts;
-  }
-}
-
-/** Calls the first provider that answers. 402, 429, and 5xx move to the next provider; the caller learns which one served. */
-async function aiFetch(body: Record<string, unknown>, timeoutMs = 90000): Promise<Response & { provider: string }> {
-  const attempts: string[] = [];
-  for (const p of CFG.providers) {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), timeoutMs);
-    try {
-      const r = await fetch(p.url, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${p.key}` },
-        body: JSON.stringify({ ...body, model: p.mapModel(String(body.model)) }),
-        signal: ctl.signal,
-      });
-      if (r.ok) {
-        // keep the timer for streamed bodies; it is cleared when the body is consumed by the caller's read loop timing out
-        (r as any).provider = p.name;
-        (r as any).timer = timer;
-        return r as Response & { provider: string };
-      }
-      clearTimeout(timer);
-      const text = (await r.text()).slice(0, 200);
-      if (r.status === 402) attempts.push(`${p.name}: credits exhausted`);
-      else if (r.status === 429) attempts.push(`${p.name}: rate limited`);
-      else if (r.status >= 500) attempts.push(`${p.name}: ${r.status} ${text}`);
-      else { attempts.push(`${p.name}: ${r.status} ${text}`); }
-    } catch (e) {
-      clearTimeout(timer);
-      attempts.push(`${p.name}: ${(e as Error).name === "AbortError" ? `no response within ${Math.round(timeoutMs / 1000)}s` : String((e as Error).message ?? e)}`);
-    }
-  }
-  throw new AiUnavailable(attempts);
-}
-
-/** Streams all blocks in one call. Calls onBlock as each validated block line closes. Returns the set of block names delivered. */
-async function streamBriefing(
-  context: string,
-  valid: Set<string>,
-  usage: Usage,
-  model: string,
-  onBlock: (name: string, data: any) => void,
-  timeoutMs = 120000,
-): Promise<Set<string>> {
-  const delivered = new Set<string>();
-  const r = await aiFetch({
-    model,
-    stream: true,
-    stream_options: { include_usage: true },
-    temperature: 0.2,
-    messages: [
-      { role: "system", content: SYSTEM },
-      { role: "user", content: `${context}\n\n${briefingRequest(BLOCK_ORDER)}` },
-    ],
-  }, timeoutMs);
-  usage.provider = r.provider;
-  const reader = r.body!.getReader();
-  const dec = new TextDecoder();
-  let sseBuf = "";
-  let textBuf = "";
-  const consumeLines = (final = false) => {
-    let idx;
-    while ((idx = textBuf.indexOf("\n")) >= 0) {
-      const line = textBuf.slice(0, idx);
-      textBuf = textBuf.slice(idx + 1);
-      const obj = tryParseBlock(line);
-      if (obj && !delivered.has(obj.block)) {
-        const [block, dropped] = validateCitations(obj, valid);
-        block.droppedCitations = dropped;
-        delivered.add(obj.block);
-        onBlock(obj.block, block);
-      }
-    }
-    if (final && textBuf.trim()) {
-      const obj = tryParseBlock(textBuf);
-      textBuf = "";
-      if (obj && !delivered.has(obj.block)) {
-        const [block, dropped] = validateCitations(obj, valid);
-        block.droppedCitations = dropped;
-        delivered.add(obj.block);
-        onBlock(obj.block, block);
-      }
-    }
-  };
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    sseBuf += dec.decode(value, { stream: true });
-    let nl;
-    while ((nl = sseBuf.indexOf("\n")) >= 0) {
-      let raw = sseBuf.slice(0, nl);
-      sseBuf = sseBuf.slice(nl + 1);
-      if (raw.endsWith("\r")) raw = raw.slice(0, -1);
-      if (!raw.startsWith("data: ")) continue;
-      const payload = raw.slice(6).trim();
-      if (payload === "[DONE]") continue;
-      try {
-        const evt = JSON.parse(payload);
-        if (evt.usage) usage.add(evt.usage);
-        const delta = evt.choices?.[0]?.delta?.content;
-        if (typeof delta === "string" && delta) {
-          textBuf += delta;
-          consumeLines();
-        }
-      } catch {
-        /* partial frame; wait for more */
-      }
-    }
-  }
-  consumeLines(true);
-  clearTimeout((r as any).timer);
-  return delivered;
-}
-
-/** Targeted regeneration for any block the stream did not deliver. */
-async function regenerateBlock(context: string, name: string, valid: Set<string>, usage: Usage, model: string): Promise<any> {
-  const r = await aiFetch({
-    model,
-    temperature: 0.2,
-    messages: [
-      { role: "system", content: SYSTEM },
-      { role: "user", content: `${context}\n\n${briefingRequest([name])}` },
-    ],
-  });
-  clearTimeout((r as any).timer);
-  const resp = await r.json();
-  usage.add(resp.usage);
-  const text: string = resp.choices?.[0]?.message?.content ?? "";
-  for (const line of text.split("\n")) {
-    const obj = tryParseBlock(line);
-    if (obj && obj.block === name) {
-      const [block, dropped] = validateCitations(obj, valid);
-      block.droppedCitations = dropped;
-      return block;
-    }
-  }
-  const m = /\{[\s\S]*\}/.exec(text);
-  if (m) {
-    try {
-      const [block, dropped] = validateCitations(JSON.parse(m[0]), valid);
-      block.droppedCitations = dropped;
-      return block;
-    } catch {
-      /* fall through */
-    }
-  }
-  return { items: [], error: `The model did not return a valid ${name} block.` };
-}
-
-
-// ---------- Validation agent: independent, evidence scoped review of every generated claim ----------
-//
-// The research agent writes the briefing. This agent never sees the research prompt or the full filing
-// context. For each block it receives only the claims and the exact filing sections those claims cite, and
-// it is instructed to assume the claim may be wrong. Three checks combine into one verdict per claim:
-//
-//   1. Figure check (deterministic, no model). Every number in the claim ($96.2 billion, 75.0%, 4.25 gigawatts,
-//      2027) must appear in the cited text, allowing for the unit shifts filings use (96,221 in a table headed
-//      "in millions" matches "$96.2 billion"). A figure the source does not contain can never be "supported".
-//   2. Quote grounding (deterministic). The validator must return a verbatim quote from the evidence for each
-//      claim. The server checks that the quote really occurs in the cited text. A verdict without locatable
-//      evidence is downgraded, so the validator cannot bluff either.
-//   3. Independent reading (model). Supported, partial, or unsupported, with a one line reason.
-//
-// Policy: unsupported claims are excluded from the briefing view (kept in "Held for review" with the reason and
-// the evidence link); partial and uncited claims stay visible and are flagged; a validator failure marks the
-// block "unverified" and never removes content. The advisor sees status at the claim, block, and briefing level,
-// with the evidence one click away.
-
-type Verdict = "supported" | "partial" | "unsupported" | "uncited" | "unverified";
-
-type CheckRow = { id: "source" | "citation" | "figures" | "authoritative" | "reading"; label: string; pass: boolean | null; detail: string };
-type SourceRef = { sectionId: string; form: string; item: string; filingDate: string; accession: string; url: string; fetchedAt: string; chars: number };
-type ClaimCheck = {
-  index: number;
-  verdict: Verdict;
-  reason: string;
-  quote: string;
-  quoteFound: boolean;
-  sectionId: string | null;
-  url: string | null;
-  figures: { checked: number; matched: number; unmatched: string[] };
-  modelVerdict: string | null;
-  checks: CheckRow[];
-  sources: SourceRef[];
-};
-
-type BlockValidation = {
-  block: string;
-  status: "verified" | "flagged" | "excluded" | "unverified";
-  claims: ClaimCheck[];
-  counts: Record<Verdict, number>;
-  policy: { unsupported: "exclude" | "flag"; partial: "flag"; uncited: "flag"; unverified: "flag" | "hide" };
-  elapsedMs: number;
-  model: string;
-  provider?: string;
-  error?: string;
-};
-
-const VALIDATOR_SYSTEM = `You are an independent fact checker for a wealth management compliance desk. You did not write the claims you are reviewing and you should assume any of them may be wrong.
-
-For each claim you receive the exact SEC filing text the writer cited. Judge each claim ONLY against that text.
-
-Verdicts:
-- "supported": every fact and figure in the claim is stated in the evidence, in substance. Paraphrase is fine; invention is not.
-- "partial": the main point is in the evidence but a figure, date, name, or qualifier is missing, imprecise, or overstated.
-- "unsupported": the evidence does not say this, contradicts it, or the claim relies on information outside the evidence.
-
-For every claim, return a verbatim quote of at most 40 words copied exactly from the evidence that best supports (or, for unsupported, most closely relates to) the claim. Do not paraphrase the quote. If nothing in the evidence relates to the claim, return an empty quote.
-
-Output only JSON: {"claims":[{"i":<index>,"verdict":"supported|partial|unsupported","quote":"...","reason":"<one sentence>"}]}`;
-
-// ---- claim extraction ----
-
-function claimText(block: string, item: any): string {
-  if (block === "summary") return String(item.text ?? "");
-  if (block === "events") return `${item.date ?? ""}: ${item.headline ?? ""}. ${item.why_it_matters ?? ""}`;
-  if (block === "risks") return `${item.title ?? ""}. ${item.text ?? ""}`;
-  if (block === "questions") return `${item.question ?? ""} ${item.answer ?? ""}`;
-  return String(item.text ?? "");
-}
-
-function claimItems(block: string, data: any): any[] {
-  return (block === "summary" ? data?.paragraphs : data?.items) ?? [];
-}
-
-// ---- figure check ----
-
-const UNIT_MULT: Record<string, number> = { thousand: 1e3, million: 1e6, billion: 1e9, trillion: 1e12, k: 1e3, m: 1e6, b: 1e9, bn: 1e9, mm: 1e6 };
-
-/** Numbers stated in a claim, with the scale a reader would infer from the surrounding word. */
-function claimFigures(text: string): Array<{ raw: string; value: number; scale: number; percent: boolean }> {
-  const out: Array<{ raw: string; value: number; scale: number; percent: boolean }> = [];
-  const re = /(?<![\w.])\$?\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*(%|percent|thousand|million|billion|trillion|bn|mm|k|m|b)?(?![\w])/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    const raw = m[0].trim();
-    const numStr = (m[1] + (m[2] ?? "")).replace(/,/g, "");
-    const value = Number(numStr);
-    if (!Number.isFinite(value)) continue;
-    const unit = (m[3] ?? "").toLowerCase();
-    const percent = unit === "%" || unit === "percent";
-    // Bare 1 to 4 digit integers without a unit are usually years, item numbers, or counts; still checked, but
-    // years (1990 to 2039) and single digits are treated as low value and skipped to avoid noise.
-    if (!unit && ((value >= 1990 && value <= 2039) || value < 10)) continue;
-    out.push({ raw, value, scale: percent ? 1 : (UNIT_MULT[unit] ?? 1), percent });
-  }
-  return out;
-}
-
-/** Every numeric value in the evidence, expanded across the unit interpretations filings use. */
-function evidenceValues(text: string): number[] {
-  const vals: number[] = [];
-  const re = /(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    const v = Number((m[1] + (m[2] ?? "")).replace(/,/g, ""));
-    if (!Number.isFinite(v)) continue;
-    vals.push(v);
-  }
-  return vals;
-}
-
-function figuresMatch(claimVal: number, claimScale: number, precisionDigits: number, ev: number[]): boolean {
-  const target = claimVal * claimScale;
-  const tol = Math.pow(10, -precisionDigits) * 0.51 * claimScale; // half a unit in the claim's last digit
-  // Interpretations of an evidence number: as written, or written in thousands / millions / billions.
-  const mults = [1, 1e3, 1e6, 1e9];
-  for (const v of ev) {
-    for (const k of mults) {
-      const cand = v * k;
-      if (Math.abs(cand - target) <= Math.max(tol, Math.abs(target) * 1e-9)) return true;
-      // the claim rounded (96.2 billion vs 96,221 million): compare at the claim's precision
-      const scaled = cand / claimScale;
-      if (Math.abs(scaled - claimVal) < Math.pow(10, -precisionDigits) * 0.51 + 1e-9) return true;
-    }
-  }
-  return false;
-}
-
-function checkFigures(claim: string, evidence: string): { checked: number; matched: number; unmatched: string[] } {
-  const figs = claimFigures(claim);
-  if (!figs.length) return { checked: 0, matched: 0, unmatched: [] };
-  const ev = evidenceValues(evidence);
-  const unmatched: string[] = [];
-  let matched = 0;
-  for (const f of figs) {
-    const decimals = (String(f.value).split(".")[1] ?? "").length;
-    if (figuresMatch(f.value, f.scale, decimals, ev)) matched++;
-    else unmatched.push(f.raw);
-  }
-  return { checked: figs.length, matched, unmatched };
-}
-
-// ---- quote grounding ----
-
-function norm(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[–—]/g, "-")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function quoteFound(quote: string, evidence: string): boolean {
-  const q = norm(quote);
-  if (q.length < 12) return false;
-  const e = norm(evidence);
-  if (e.includes(q)) return true;
-  // tolerate a dropped word or punctuation: require most 5 word shingles to appear
-  const words = q.split(" ").filter(Boolean);
-  if (words.length < 6) return false;
-  let hit = 0, total = 0;
-  for (let i = 0; i + 5 <= words.length; i += 2) {
-    total++;
-    if (e.includes(words.slice(i, i + 5).join(" "))) hit++;
-  }
-  return total > 0 && hit / total >= 0.6;
-}
-
-// ---- the agent ----
-
-function buildEvidence(sectionIds: string[], sectionsById: Map<string, Section>): { text: string; primary: Section | null } {
-  const secs = sectionIds.map((id) => sectionsById.get(id)).filter((s): s is Section => !!s);
-  const text = secs.map((s) => `<evidence id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${s.text}\n</evidence>`).join("\n");
-  return { text, primary: secs[0] ?? null };
-}
-
-async function validateBlock(
-  block: string,
-  data: any,
-  sectionsById: Map<string, Section>,
-  model: string,
-  policyUnsupported: "exclude" | "flag",
-  policyUnverified: "flag" | "hide" = "flag",
-  timeoutMs = 45000,
-): Promise<BlockValidation> {
-  const started = Date.now();
-  const items = claimItems(block, data);
-  const policy = { unsupported: policyUnsupported, partial: "flag", uncited: "flag", unverified: policyUnverified } as const;
-  const counts: Record<Verdict, number> = { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 };
-  const claims: ClaimCheck[] = [];
-
-  // Deterministic pass first: figures and citation presence. This runs even if the model call fails.
-  const prepared = items.map((item, index) => {
-    const text = claimText(block, item);
-    const cites: string[] = Array.isArray(item.citations) ? item.citations : [];
-    const ev = buildEvidence(cites, sectionsById);
-    const figures = cites.length ? checkFigures(text, ev.text) : { checked: 0, matched: 0, unmatched: [] };
-    return { index, text, cites, ev, figures };
-  });
-
-  const finish = (): BlockValidation => {
-    for (const c of claims) counts[c.verdict]++;
-    const status: BlockValidation["status"] =
-      counts.unverified > 0 && claims.every((c) => c.verdict === "unverified") ? "unverified"
-        : counts.unsupported > 0 && policy.unsupported === "exclude" ? "excluded"
-          : counts.partial + counts.uncited + counts.unsupported + counts.unverified > 0 ? "flagged"
-            : "verified";
-    return { block, status, claims, counts, policy, elapsedMs: Date.now() - started, model, provider };
-  };
-  let provider = "";
-
-  if (!items.length) return finish();
-
-  // Model pass, scoped to the cited evidence only.
-  const toReview = prepared.filter((p) => p.cites.length && p.ev.text);
-  let modelOut = new Map<number, { verdict: string; quote: string; reason: string }>();
-  let modelError: string | undefined;
-  if (toReview.length) {
-    const evidenceBlocks = new Map<string, string>();
-    for (const p of toReview) for (const id of p.cites) { const s = sectionsById.get(id); if (s) evidenceBlocks.set(id, `<evidence id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${s.text}\n</evidence>`); }
-    const user = `EVIDENCE (the only source of truth for this review):\n${[...evidenceBlocks.values()].join("\n")}\n\nCLAIMS TO REVIEW (each lists the evidence ids its writer cited):\n${toReview
-      .map((p) => `[${p.index}] cites ${p.cites.join(", ")}\n${p.text}`)
-      .join("\n\n")}\n\nReturn the JSON object now.`;
-    try {
-      const r = await aiFetch({ model, temperature: 0, messages: [{ role: "system", content: VALIDATOR_SYSTEM }, { role: "user", content: user }] }, timeoutMs);
-      provider = r.provider;
-      clearTimeout((r as any).timer);
-      const resp = await r.json();
-      const text: string = resp.choices?.[0]?.message?.content ?? "";
-      const m = /\{[\s\S]*\}/.exec(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
-      const parsed = m ? JSON.parse(m[0]) : {};
-      for (const c of parsed.claims ?? []) modelOut.set(Number(c.i), { verdict: String(c.verdict ?? "").toLowerCase(), quote: String(c.quote ?? ""), reason: String(c.reason ?? "") });
-    } catch (e) {
-      modelError = String((e as Error).message ?? e);
-    }
-  }
-
-  for (const p of prepared) {
-    const secs = p.cites.map((id) => sectionsById.get(id)).filter((x): x is Section => !!x);
-    const sources: SourceRef[] = secs.map((x) => ({ sectionId: x.id, form: x.form, item: x.item, filingDate: x.filingDate, accession: x.accession, url: x.url, fetchedAt: x.fetchedAt, chars: x.chars }));
-    const srcLabel = secs.map((x) => `${x.form} ${x.item} filed ${x.filingDate}`).join("; ");
-    const checks: CheckRow[] = [
-      { id: "citation", label: "Citation found", pass: p.cites.length > 0 && secs.length === p.cites.length,
-        detail: p.cites.length ? (secs.length === p.cites.length ? `The claim cites ${secs.length} filing section${secs.length > 1 ? "s" : ""} that ${secs.length > 1 ? "were" : "was"} actually read: ${srcLabel}.` : "The claim cites a section id that was not among the sections read.") : "The writer attached no citation to this claim." },
-      { id: "source", label: "Source content checked", pass: secs.length > 0 ? true : null,
-        detail: secs.length ? `${secs.reduce((a, x) => a + x.chars, 0).toLocaleString()} characters of the cited filing text were sent to the validator as the only evidence.` : "No cited text to check against." },
-      { id: "figures", label: "Numbers match the filing", pass: p.figures.checked ? p.figures.unmatched.length === 0 : null,
-        detail: p.figures.checked ? (p.figures.unmatched.length ? `${p.figures.matched} of ${p.figures.checked} figures found in the cited text. Not found: ${p.figures.unmatched.join(", ")}.` : `All ${p.figures.checked} figure${p.figures.checked > 1 ? "s" : ""} in the claim appear in the cited text.`) : "The claim states no figures to check." },
-      { id: "authoritative", label: "Source is authoritative", pass: secs.length > 0 ? true : null,
-        detail: secs.length ? `Primary document of an SEC EDGAR filing (accession ${secs[0]!.accession}), fetched from sec.gov at ${secs[0]!.fetchedAt.replace("T", " ").slice(0, 19)} UTC.` : "No SEC source attached." },
-    ];
-    const base: ClaimCheck = {
-      index: p.index, verdict: "unverified", reason: "", quote: "", quoteFound: false,
-      sectionId: p.ev.primary?.id ?? null, url: p.ev.primary?.url ?? null, figures: p.figures, modelVerdict: null, checks, sources,
-    };
-    if (!p.cites.length) {
-      checks.push({ id: "reading", label: "Independent reading", pass: null, detail: "Not run: nothing to read against." });
-      claims.push({ ...base, verdict: "uncited", reason: "The writer cited no filing section for this claim." });
-      continue;
-    }
-    const mo = modelOut.get(p.index);
-    if (!mo) {
-      const why = modelError ? `Validator unavailable: ${modelError}` : "Validator returned no verdict for this claim.";
-      checks.push({ id: "reading", label: "Independent reading", pass: null, detail: `${why} No confidence is shown; the deterministic checks above still stand and the original filing is linked.` });
-      claims.push({ ...base, verdict: "unverified", reason: why });
-      continue;
-    }
-    const qf = mo.quote ? quoteFound(mo.quote, p.ev.text) : false;
-    let verdict: Verdict;
-    let reason = mo.reason;
-    if (mo.verdict === "unsupported") {
-      verdict = "unsupported";
-    } else if (mo.verdict === "partial") {
-      verdict = "partial";
-    } else if (mo.verdict === "supported") {
-      if (!qf) { verdict = "partial"; reason = `Validator called this supported but its evidence quote could not be located in the cited text. ${reason}`.trim(); }
-      else if (p.figures.unmatched.length) { verdict = "partial"; reason = `Figure${p.figures.unmatched.length > 1 ? "s" : ""} not found in the cited text: ${p.figures.unmatched.join(", ")}. ${reason}`.trim(); }
-      else verdict = "supported";
-    } else {
-      verdict = "unverified"; reason = `Validator returned an unknown verdict "${mo.verdict}".`;
-    }
-    if (verdict === "supported" && p.figures.checked && p.figures.matched < p.figures.checked) verdict = "partial";
-    checks.push({ id: "reading", label: "Independent reading", pass: mo.verdict === "supported" ? qf : mo.verdict === "partial" ? null : false,
-      detail: mo.verdict === "supported"
-        ? (qf ? `A second model read only the cited text and found the claim stated there. Evidence quote located verbatim in the filing.` : `A second model called this supported but its evidence quote could not be located in the cited text, so the claim is marked for review.`)
-        : mo.verdict === "partial" ? `A second model found the main point in the cited text but a detail is missing or imprecise: ${mo.reason}` : `A second model could not find this in the cited text: ${mo.reason}` });
-    claims.push({ ...base, verdict, reason, quote: mo.quote, quoteFound: qf, modelVerdict: mo.verdict });
-  }
-  const out = finish();
-  if (modelError) out.error = modelError;
-  return out;
-}
-
-function summarizeValidation(blocks: BlockValidation[], started: number, model: string) {
-  const counts: Record<Verdict, number> = { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 };
-  let claims = 0, figuresChecked = 0, figuresMatched = 0, quotesFound = 0;
-  for (const b of blocks) for (const c of b.claims) {
-    claims++; counts[c.verdict]++;
-    figuresChecked += c.figures.checked; figuresMatched += c.figures.matched;
-    if (c.quoteFound) quotesFound++;
-  }
-  const excluded = blocks.reduce((a, b) => a + (b.policy.unsupported === "exclude" ? b.counts.unsupported : 0) + (b.policy.unverified === "hide" ? b.counts.unverified : 0), 0);
-  const validatorRan = blocks.some((b) => b.claims.some((c) => c.modelVerdict !== null));
-  const status = claims === 0 || !validatorRan ? "unverified" : counts.unsupported > 0 ? "unsupported" : counts.supported === claims ? "verified" : "review";
-  // Safe failure: if the independent reading did not run, no coverage figure is reported at all. A number here would be a false signal.
-  const supportedPct = validatorRan && claims ? Math.round((100 * counts.supported) / claims) : null;
-  const hidden = blocks.reduce((a, b) => a + (b.policy.unverified === "hide" ? b.counts.unverified : 0), 0);
-  const errors = [...new Set(blocks.map((b) => b.error).filter((x): x is string => !!x))];
-  return { claims, counts, excluded, hidden, flagged: counts.partial + counts.uncited + (hidden ? 0 : counts.unverified) + (counts.unsupported - (excluded - hidden)), figuresChecked, figuresMatched, quotesFound, supportedPct, validatorRan, status, model, provider: blocks.find((b) => b.provider)?.provider ?? null, errors, elapsedMs: Date.now() - started };
-}
-
-// ---------- Filing digest: what the advisor gets even when no model is available ----------
-// Built from structured data only (EDGAR submissions feed, XBRL company facts, section extraction). No model, no
-// inference, every line traceable to a filing or a data point. This is the safe failure state: the page never
-// shows an empty briefing, and nothing here can be a hallucination.
-function buildDigest(sel: any, fin: any, sections: Section[]) {
-  const fmt = (v: number | null | undefined) => (v == null ? "n/a" : (v < 0 ? "-$" : "$") + (Math.abs(v) >= 1e9 ? (Math.abs(v) / 1e9).toFixed(1) + "B" : (Math.abs(v) / 1e6).toFixed(0) + "M"));
-  const rev = fin?.revenue?.points ?? [], ni = fin?.netIncome?.points ?? [];
-  const facts: Array<{ text: string; source: string }> = [];
-  if (rev.length) {
-    const last = rev[rev.length - 1], prev = rev.length > 1 ? rev[rev.length - 2] : null, yago = rev.length > 4 ? rev[rev.length - 5] : null;
-    facts.push({ text: `Revenue ${fmt(last.value)} for ${last.label} (period end ${last.periodEnd})${prev ? `, ${last.value >= prev.value ? "up" : "down"} ${Math.abs(((last.value / prev.value) - 1) * 100).toFixed(0)}% from ${prev.label}` : ""}${yago ? ` and ${last.value >= yago.value ? "up" : "down"} ${Math.abs(((last.value / yago.value) - 1) * 100).toFixed(0)}% from ${yago.label}` : ""}.`, source: `SEC XBRL company facts, us-gaap:${fin.revenue.tag}, ${last.form} filed ${last.filed}` });
-    const n = ni.find((p: any) => p.frame === last.frame);
-    if (n) facts.push({ text: `Net income ${fmt(n.value)} for ${last.label}, a ${((n.value / last.value) * 100).toFixed(1)}% net margin.`, source: `SEC XBRL company facts, us-gaap:${fin.netIncome.tag}, ${n.form} filed ${n.filed}` });
-  }
-  if (fin?.sharesOutstanding) facts.push({ text: `${Number(fin.sharesOutstanding.value).toLocaleString()} shares outstanding as of ${fin.sharesOutstanding.asOf}.`, source: `SEC XBRL, dei:EntityCommonStockSharesOutstanding, ${fin.sharesOutstanding.form} filed ${fin.sharesOutstanding.filed}` });
-  const events = (sel["8-K"] ?? []).map((f: any) => {
-    const codes = String(f.items ?? "").split(",").map((c: string) => c.trim()).filter(Boolean);
-    return { date: f.filingDate, items: codes, labels: codes.map((c: string) => EIGHT_K_ITEMS[c] ?? `Item ${c}`), url: f.url, accession: f.accession };
-  });
-  const filings = ["10-K", "10-Q"].filter((k) => sel[k]).map((k) => ({ form: k, filingDate: sel[k].filingDate, reportDate: sel[k].reportDate, accession: sel[k].accession, url: sel[k].url }));
-  return {
-    generatedAt: new Date().toISOString(),
-    facts,
-    events,
-    filings,
-    sectionsRead: sections.map((x) => ({ id: x.id, title: x.title, chars: x.chars, truncated: x.truncated, url: x.url, fetchedAt: x.fetchedAt })),
-  };
-}
-
-// ---------- handler ----------
 async function handleBrief(request: Request): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
-  CFG = readEnv();
-  const q = new URL(request.url).searchParams.get("q")?.trim() ?? "";
-  if (!q) return new Response(JSON.stringify({ error: "q is required" }), { status: 400, headers: { ...CORS, "content-type": "application/json" } });
+  const cfg: Cfg = readEnv();
+  configureEdgar(cfg);
+  const url = new URL(request.url);
+  const v = validateQuery(url.searchParams.get("q"));
+  if (!v.ok) return json(400, { error: v.message });
+  const q = v.value;
+  const fresh = url.searchParams.get("fresh") === "1";
+  const rate = rateLimit(`brief:${clientKey(request)}`, cfg.RATE_LIMIT_BRIEFS_PER_10M);
+  if (!rate.ok) return json(429, { error: "Too many briefings in a short time. Try again in a few minutes." });
 
   const enc = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: string, data: unknown) => controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      const recorded: Array<{ event: string; data: unknown }> = [];
+      const send = (event: string, data: unknown) => {
+        recorded.push({ event, data });
+        controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      };
       const t0 = Date.now();
       try {
-        const company = await resolve(q);
+        const store = await getStore();
+        const { company, sel, quote, factsRes, accessions, key } = await loadCompany(q);
         send("resolved", company);
-        const [sub, quote, factsRes] = await Promise.all([
-          submissions(company.cik),
-          getQuote(company.ticker),
-          companyFacts(company.cik).catch((e) => ({ error: String(e) })),
-        ]);
-        const sel = selectFilings(sub, company.cik);
-        Object.assign(company, Object.fromEntries(Object.entries(sel.company).filter(([k]) => k !== "name")));
+
+        // Memory hit: the same filings were briefed recently. Replay the stored briefing with a fresh quote.
+        const remembered = fresh ? null : await store.getBriefing(key);
+        if (remembered) {
+          const fin = (factsRes as any).error ? { revenue: { points: [] }, netIncome: { points: [] }, eps: { points: [] }, dividends: { points: [] }, error: (factsRes as any).error } : financials(factsRes);
+          (quote as any).derived = derived(quote, fin);
+          send("memory", { hit: true, generatedAt: remembered.generatedAt, ageMs: Date.now() - Date.parse(remembered.generatedAt), backend: store.kind });
+          for (const ev of remembered.events) {
+            if (ev.event === "quote") send("quote", quote);
+            else if (ev.event === "financials") send("financials", fin);
+            else send(ev.event, ev.data);
+          }
+          send("done", { totalMs: Date.now() - t0, disclaimer: DISCLAIMER, researchFailed: remembered.summary.researchFailed, fromMemory: true });
+          return;
+        }
+        send("memory", { hit: false, backend: store.kind });
+
         send("filings", { "10-K": sel["10-K"], "10-Q": sel["10-Q"], "8-K": sel["8-K"], company: sel.company });
         const fin = (factsRes as any).error
           ? { revenue: { points: [] }, netIncome: { points: [] }, eps: { points: [] }, dividends: { points: [] }, error: (factsRes as any).error }
@@ -937,83 +79,120 @@ async function handleBrief(request: Request): Promise<Response> {
         send("quote", quote);
         send("financials", fin);
 
-        const jobs: Array<[string, Filing]> = [];
-        if (sel["10-K"]) jobs.push(["10-K", sel["10-K"]]);
-        if (sel["10-Q"]) jobs.push(["10-Q", sel["10-Q"]]);
-        for (const f of sel["8-K"]) jobs.push(["8-K", f]);
-        const htmls = await Promise.allSettled(jobs.map(([, f]) => document_(f)));
-        const sections: Section[] = [];
-        htmls.forEach((h, i) => {
-          if (h.status !== "fulfilled") return;
-          const [form, f] = jobs[i]!;
-          try {
-            if (form === "10-K") sections.push(...sections10k(h.value, f));
-            else if (form === "10-Q") sections.push(...sections10q(h.value, f));
-            else sections.push(section8k(h.value, f));
-          } catch {
-            /* skip a filing that will not parse */
-          }
-        });
+        const sections = await loadSections(sel);
         send("sections", { sections: sections.map(({ text: _t, ...rest }) => rest), dataLatencyMs: Date.now() - t0 });
         send("digest", buildDigest(sel, fin, sections));
+        const sectionsChars = sections.reduce((a, s) => a + s.chars, 0);
+        const injectionLines = sections.reduce((a, s) => a + countInjectionLines(s.text), 0);
 
-        if (!CFG.providers.length) {
-          send("research_failed", { message: "No AI provider is configured. Showing the filing digest built without a model.", attempts: [] });
-          send("done", { totalMs: Date.now() - t0, disclaimer: DISCLAIMER, researchFailed: true });
-          return;
-        }
-        const model = CFG.AI_MODEL;
-        send("status", { message: `Reading ${sections.length} filing sections with ${model.split("/").pop()} (first block usually lands in 10 to 40 seconds)` });
-        const context = buildContext(sections, company);
-        const valid = new Set(sections.map((s) => s.id));
-        const sectionsById = new Map(sections.map((s) => [s.id, s] as [string, Section]));
+        // Retrieval index for follow up questions, built in the background while the briefing streams.
+        const indexJob = (async () => {
+          try {
+            const idx = await buildIndex(cfg, key, sections);
+            store.putIndex(idx);
+            send("index", { chunks: idx.chunks.length, mode: idx.mode, embedModel: idx.embedModel, provider: idx.provider, buildMs: idx.buildMs });
+          } catch (e) {
+            console.error(`[advisor-brief] index: ${(e as Error).message}`);
+            send("index", { chunks: 0, mode: "lexical", embedModel: null, provider: null, buildMs: 0 });
+          }
+        })();
+
+        let researchFailed = false;
+        let validatorRan = false;
+        let claims = 0;
+        let outputFlags = 0;
+        let droppedCitations = 0;
         const usage = new Usage();
-        usage.model = model;
-        const started = Date.now();
 
-        // Validation agent runs alongside the research stream: each block is reviewed the moment it lands,
-        // while the research agent is still writing the next one.
-        const validations: Promise<BlockValidation>[] = [];
-        const validateAndSend = (name: string, data: any) => {
-          send("validation", { block: name, status: "validating" });
-          const p = validateBlock(name, data, sectionsById, CFG.VALIDATOR_MODEL, CFG.VALIDATION_POLICY, CFG.UNVERIFIED_POLICY, CFG.VALIDATOR_TIMEOUT_MS)
-            .catch((e) => ({ block: name, status: "unverified", claims: [], counts: { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 }, policy: { unsupported: CFG.VALIDATION_POLICY, partial: "flag", uncited: "flag", unverified: CFG.UNVERIFIED_POLICY }, elapsedMs: 0, model: CFG.VALIDATOR_MODEL, error: String((e as Error).message ?? e) }) as BlockValidation)
-            .then((v) => { send("validation", v); return v; });
-          validations.push(p);
-        };
+        if (!cfg.providers.length) {
+          researchFailed = true;
+          const r = clientReason(new AiUnavailable([]), cfg);
+          send("research_failed", { message: r.message, code: r.code, attempts: cfg.DEBUG_ERRORS ? ["no provider configured"] : undefined, blocksDelivered: 0 });
+        } else {
+          const model = cfg.AI_MODEL;
+          usage.model = model;
+          send("status", { message: `Reading ${sections.length} filing sections with ${model.split("/").pop()} (first block usually lands in 10 to 20 seconds)` });
+          const context = buildContext(sections, company);
+          const valid = new Set(sections.map((s) => s.id));
+          const sectionsById = new Map(sections.map((s) => [s.id, s] as [string, Section]));
+          const started = Date.now();
 
-        let researchError: string | null = null;
-        let deliveredCount = 0;
-        try {
-          const delivered = await streamBriefing(context, valid, usage, model, (name, data) => {
-            deliveredCount++;
-            send("block", { name, title: BLOCKS[name]!.title, data, elapsedMs: Date.now() - started });
-            validateAndSend(name, data);
-          }, CFG.RESEARCH_TIMEOUT_MS);
-          const missing = BLOCK_ORDER.filter((n) => !delivered.has(n));
-          if (missing.length) send("status", { message: `Regenerating ${missing.length} block${missing.length > 1 ? "s" : ""}` });
-          await Promise.all(
-            missing.map(async (n) => {
-              const data = await regenerateBlock(context, n, valid, usage, model).catch((e) => ({ items: [], error: String(e) }));
-              send("block", { name: n, title: BLOCKS[n]!.title, data, elapsedMs: Date.now() - started });
-              validateAndSend(n, data);
-            }),
-          );
-        } catch (e) {
-          // Safe failure: the research agent is unavailable or too slow. The digest (already sent) carries the filings,
-          // XBRL facts, and 8-K timeline with links and timestamps; nothing generated is shown as if it were verified.
-          researchError = (e as Error).name === "AbortError" ? `The research model did not finish within ${Math.round(CFG.RESEARCH_TIMEOUT_MS / 1000)} seconds.` : String((e as Error).message ?? e);
-          send("research_failed", { message: researchError, attempts: (e as AiUnavailable).attempts ?? [], blocksDelivered: deliveredCount });
+          // Validation agent runs alongside the research stream: each block is reviewed the moment it lands.
+          const validations: Promise<BlockValidation>[] = [];
+          // Output screening (advice, forecast, guarantee, contact language) on every claim before it is sent.
+          const screenBlock = (name: string, data: any) => {
+            for (const item of claimItems(name, data)) {
+              const flags = screenText(claimText(name, item));
+              if (flags.length) { item.complianceFlags = flags; outputFlags++; }
+            }
+            droppedCitations += Number(data?.droppedCitations ?? 0);
+          };
+          const validateAndSend = (name: string, data: any) => {
+            send("validation", { block: name, status: "validating" });
+            const p = validateBlock(cfg, name, data, sectionsById, cfg.VALIDATOR_MODEL, cfg.VALIDATION_POLICY, cfg.UNVERIFIED_POLICY, cfg.VALIDATOR_TIMEOUT_MS)
+              .catch((e) => {
+                logAiFailure(`validateBlock ${name}`, e);
+                return { block: name, status: "unverified", claims: [], counts: { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 }, policy: { unsupported: cfg.VALIDATION_POLICY, partial: "flag", uncited: "flag", unverified: cfg.UNVERIFIED_POLICY }, elapsedMs: 0, model: cfg.VALIDATOR_MODEL, error: "the independent reading service did not respond" } as BlockValidation;
+              })
+              .then((v) => { send("validation", v); return v; });
+            validations.push(p);
+          };
+
+          let deliveredCount = 0;
+          try {
+            const delivered = await streamBriefing(cfg, context, valid, usage, model, (name, data) => {
+              deliveredCount++;
+              screenBlock(name, data);
+              send("block", { name, title: BLOCKS[name]!.title, data, elapsedMs: Date.now() - started });
+              validateAndSend(name, data);
+            }, cfg.RESEARCH_TIMEOUT_MS);
+            const missing = BLOCK_ORDER.filter((n) => !delivered.has(n));
+            if (missing.length) send("status", { message: `Completing ${missing.length} remaining block${missing.length > 1 ? "s" : ""}` });
+            await Promise.all(
+              missing.map(async (n) => {
+                const data = await regenerateBlock(cfg, context, n, valid, usage, model).catch((e) => { logAiFailure(`regenerate ${n}`, e); return { items: [], error: "This section could not be generated." }; });
+                screenBlock(n, data);
+                send("block", { name: n, title: BLOCKS[n]!.title, data, elapsedMs: Date.now() - started });
+                validateAndSend(n, data);
+              }),
+            );
+          } catch (e) {
+            // Safe failure: the digest (already sent) carries the filings, XBRL facts, and 8-K timeline with links
+            // and timestamps. The advisor sees a neutral message; the real reason is in the server log.
+            researchFailed = true;
+            logAiFailure("streamBriefing", e);
+            const r = clientReason(e, cfg);
+            send("research_failed", { message: r.message, code: r.code, attempts: cfg.DEBUG_ERRORS ? (e as AiUnavailable).attempts ?? [String((e as Error).message)] : undefined, blocksDelivered: deliveredCount });
+          }
+          if (validations.length) {
+            send("status", { message: `Validating claims against the cited filings with ${cfg.VALIDATOR_MODEL.split("/").pop()}` });
+            const results = await Promise.all(validations);
+            const summary = summarizeValidation(results, started, cfg.VALIDATOR_MODEL);
+            validatorRan = summary.validatorRan;
+            claims = summary.claims;
+            send("validation_summary", summary);
+          }
+          if (usage.calls > 0) send("usage", { data: { ...usage.toDict(), elapsedMs: Date.now() - started } });
         }
-        if (validations.length) {
-          send("status", { message: `Validating claims against the cited filings with ${CFG.VALIDATOR_MODEL.split("/").pop()}` });
-          const results = await Promise.all(validations);
-          send("validation_summary", summarizeValidation(results, started, CFG.VALIDATOR_MODEL));
+
+        await indexJob;
+        send("guardrails", briefGuardrails({ query: q, sectionsChars, injectionLines, citationsDropped: droppedCitations, outputFlags, claims, validatorRan, rateRemaining: rate.remaining }));
+        send("done", { totalMs: Date.now() - t0, disclaimer: DISCLAIMER, researchFailed, fromMemory: false });
+
+        // Remember the briefing (not the quote, which is refreshed on replay) when the narrative was produced.
+        if (!researchFailed) {
+          const vs = recorded.find((r) => r.event === "validation_summary")?.data as any;
+          const rec: BriefingRecord = {
+            key, ticker: company.ticker, name: company.name, cik: company.cik, generatedAt: new Date().toISOString(), accessions,
+            events: recorded.filter((r) => !["memory", "done"].includes(r.event)),
+            summary: { status: vs?.status ?? null, claims: vs?.claims ?? 0, supported: vs?.counts?.supported ?? 0, researchFailed, price: (quote as any).price ?? null, changePct: (quote as any).changePct ?? null },
+          };
+          await store.putBriefing(rec, cfg.MEMORY_TTL_MS).catch((e) => console.error(`[advisor-brief] memory: ${(e as Error).message}`));
         }
-        send("usage", { data: { ...usage.toDict(), elapsedMs: Date.now() - started } });
-        send("done", { totalMs: Date.now() - t0, disclaimer: DISCLAIMER, researchFailed: !!researchError });
       } catch (e) {
-        send("error", { message: String((e as Error).message ?? e) });
+        console.error(`[advisor-brief] ${(e as Error).message ?? e}`);
+        const msg = String((e as Error).message ?? e);
+        send("error", { message: /No SEC registrant/.test(msg) ? msg : "The briefing could not be built for this request." });
       } finally {
         controller.close();
       }
