@@ -52,6 +52,8 @@ const fmtDate = (s?: string | null) => {
 type SectionMeta = { id: string; url: string; title: string; chars: number; truncated: boolean };
 type BlockEvent = { name: string; title: string; data: any; elapsedMs?: number };
 type Verdict = "supported" | "partial" | "unsupported" | "uncited" | "unverified";
+type CheckRow = { id: string; label: string; pass: boolean | null; detail: string };
+type SourceRef = { sectionId: string; form: string; item: string; filingDate: string; accession: string; url: string; fetchedAt: string; chars: number };
 type ClaimCheck = {
   index: number;
   verdict: Verdict;
@@ -61,29 +63,45 @@ type ClaimCheck = {
   sectionId: string | null;
   url: string | null;
   figures: { checked: number; matched: number; unmatched: string[] };
+  checks?: CheckRow[];
+  sources?: SourceRef[];
 };
 type BlockValidation = {
   block: string;
   status: "validating" | "verified" | "flagged" | "excluded" | "unverified";
   claims?: ClaimCheck[];
   counts?: Record<Verdict, number>;
-  policy?: { unsupported: "exclude" | "flag" };
+  policy?: { unsupported: "exclude" | "flag"; unverified?: "flag" | "hide" };
   error?: string;
+  provider?: string;
 };
 type ValidationSummary = {
   claims: number;
   counts: Record<Verdict, number>;
   excluded: number;
+  hidden?: number;
   flagged: number;
   figuresChecked: number;
   figuresMatched: number;
-  supportedPct: number;
-  status: "verified" | "review" | "unverified";
+  quotesFound?: number;
+  supportedPct: number | null;
+  validatorRan?: boolean;
+  status: "verified" | "review" | "unsupported" | "unverified";
   model: string;
+  provider?: string | null;
+  errors?: string[];
   elapsedMs: number;
 };
+type Digest = {
+  generatedAt: string;
+  facts: Array<{ text: string; source: string }>;
+  events: Array<{ date: string; items: string[]; labels: string[]; url: string; accession: string }>;
+  filings: Array<{ form: string; filingDate: string; reportDate: string; accession: string; url: string }>;
+  sectionsRead: Array<{ id: string; title: string; chars: number; truncated: boolean; url: string; fetchedAt: string }>;
+};
+const fmtStamp = (iso?: string | null) => (iso ? iso.replace("T", " ").slice(0, 19) + " UTC" : "");
 
-const VERDICT_LABEL: Record<Verdict, string> = { supported: "Verified", partial: "Review", unsupported: "Not supported", uncited: "No citation", unverified: "Unverified" };
+const VERDICT_LABEL: Record<Verdict, string> = { supported: "Verified", partial: "Review", unsupported: "Not supported", uncited: "No citation", unverified: "Not validated" };
 const VERDICT_CLASS: Record<Verdict, string> = {
   supported: "border-good/50 text-good",
   partial: "border-warn/60 text-warn",
@@ -172,21 +190,37 @@ function ClaimMark({ check, index }: { check?: ClaimCheck | undefined; index: Re
       </button>
       {open ? (
         <div className="mb-2.5 mt-1.5 rounded-lg border border-line bg-background px-3 py-2.5 text-[13px]">
+          <div className="mb-1.5 text-xs uppercase tracking-[0.8px] text-ink-3">Why this status</div>
+          {(check.checks || []).map((c) => (
+            <div key={c.id} className="mb-1 grid grid-cols-[72px_1fr] gap-2">
+              <span className={`font-mono text-[11px] ${c.pass === true ? "text-good" : c.pass === false ? "text-bad" : "text-ink-3"}`}>{c.pass === true ? "PASS" : c.pass === false ? "FAIL" : "NOT RUN"}</span>
+              <span>
+                <span className="font-semibold text-ink">{c.label}.</span> <span className="text-ink-2">{c.detail}</span>
+              </span>
+            </div>
+          ))}
           {check.quote ? (
-            <div>
+            <div className="mt-1.5">
               <span className="text-ink-3">Evidence{check.quoteFound ? "" : " (not located verbatim in the cited text)"}: </span>
               <span className="text-ink-2">“{check.quote}”</span>
             </div>
           ) : null}
-          {check.reason ? <div className={`mt-1 ${check.verdict === "supported" ? "text-ink-3" : "text-warn"}`}>{check.reason}</div> : null}
-          {check.figures?.unmatched?.length ? <div className="mt-1 text-warn">Figures not found in the cited text: {check.figures.unmatched.join(", ")}</div> : null}
-          {sec ? (
-            <div className="mt-1.5">
+          {!check.checks?.length && check.reason ? <div className="mt-1 text-warn">{check.reason}</div> : null}
+          <div className="mt-2 text-xs text-ink-3">
+            {(check.sources || []).map((src) => (
+              <div key={src.sectionId} className="mb-1">
+                <a className="ab-cite" href={src.url} target="_blank" rel="noopener">
+                  {src.form} · {src.item} · filed {fmtDate(src.filingDate)}
+                </a>
+                <span className="ml-1">accession {src.accession} · fetched {fmtStamp(src.fetchedAt)} · {src.chars.toLocaleString()} chars read</span>
+              </div>
+            ))}
+            {!check.sources?.length && sec ? (
               <a className="ab-cite" href={sec.url} target="_blank" rel="noopener">
                 Open {sec.id.split("|")[0]} · {sec.id.split("|")[2]} on sec.gov
               </a>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </div>
       ) : null}
     </span>
@@ -197,8 +231,8 @@ function BlockBadge({ v }: { v?: BlockValidation | undefined }) {
   if (!v) return null;
   if (v.status === "validating") return <span className="mr-1.5 inline-flex items-center rounded-full border px-2 py-px align-middle font-mono text-[11px] leading-5 border-line text-ink-3">Validating</span>;
   const c = v.counts || ({} as Record<Verdict, number>);
-  const held = v.policy?.unsupported === "exclude" ? c.unsupported || 0 : 0;
-  const flagged = (c.partial || 0) + (c.uncited || 0) + (c.unverified || 0) + (v.policy?.unsupported === "flag" ? c.unsupported || 0 : 0);
+  const held = (v.policy?.unsupported === "exclude" ? c.unsupported || 0 : 0) + (v.policy?.unverified === "hide" ? c.unverified || 0 : 0);
+  const flagged = (c.partial || 0) + (c.uncited || 0) + (v.policy?.unverified === "hide" ? 0 : c.unverified || 0) + (v.policy?.unsupported === "flag" ? c.unsupported || 0 : 0);
   if (v.status === "unverified") return <span className="mr-1.5 inline-flex items-center rounded-full border px-2 py-px align-middle font-mono text-[11px] leading-5 border-line text-ink-3" title={v.error || ""}>Not validated</span>;
   if (v.status === "verified") return <span className="mr-1.5 inline-flex items-center rounded-full border px-2 py-px align-middle font-mono text-[11px] leading-5 border-good/50 text-good">All {c.supported || 0} claims verified</span>;
   return (
@@ -208,7 +242,8 @@ function BlockBadge({ v }: { v?: BlockValidation | undefined }) {
   );
 }
 
-function ValidationBar({ summary, pending }: { summary: ValidationSummary | null; pending: boolean }) {
+function ValidationBar({ summary, pending, filings }: { summary: ValidationSummary | null; pending: boolean; filings: any }) {
+  const [open, setOpen] = useState(false);
   if (!summary && !pending) return null;
   if (!summary)
     return (
@@ -218,29 +253,65 @@ function ValidationBar({ summary, pending }: { summary: ValidationSummary | null
       </div>
     );
   const c = summary.counts;
-  const tone = summary.status === "verified" ? "text-good" : summary.status === "review" ? "text-warn" : "text-ink-3";
+  const headline =
+    summary.status === "verified" ? "Verified: every claim is supported by its cited filing"
+      : summary.status === "unsupported" ? "Unsupported claims held for review"
+        : summary.status === "review" ? "Needs review: some claims are only partly supported"
+          : "Not validated: the independent check could not run";
+  const tone = summary.status === "verified" ? "text-good" : summary.status === "unsupported" ? "text-bad" : summary.status === "review" ? "text-warn" : "text-ink-3";
+  const docs: Array<{ form: string; url: string; date: string; accession: string }> = [];
+  if (filings?.["10-K"]) docs.push({ form: "10-K", url: filings["10-K"].url, date: filings["10-K"].filingDate, accession: filings["10-K"].accession });
+  if (filings?.["10-Q"]) docs.push({ form: "10-Q", url: filings["10-Q"].url, date: filings["10-Q"].filingDate, accession: filings["10-Q"].accession });
+  for (const f of filings?.["8-K"] || []) docs.push({ form: "8-K", url: f.url, date: f.filingDate, accession: f.accession });
+  const ran = summary.validatorRan !== false && summary.supportedPct != null;
   return (
     <div className="ab-card mb-4 text-sm">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <div>
-          <span className={`font-semibold ${tone}`}>
-            {summary.status === "verified" ? "Every claim verified against its cited filing" : summary.status === "review" ? "Validation complete, items need review" : "Validation unavailable"}
-          </span>
+          <span className={`font-semibold ${tone}`}>{headline}</span>
           <span className="ml-3 text-ink-2">
-            {summary.claims} claims · {c.supported} verified · {summary.flagged} flagged · {summary.excluded} held for review
+            {summary.claims} claims · {c.supported} verified · {summary.flagged} need review · {summary.excluded} held
           </span>
         </div>
         <div className="font-mono text-xs text-ink-3">
           {summary.figuresChecked ? `${summary.figuresMatched}/${summary.figuresChecked} figures found in filings · ` : ""}
-          validator {String(summary.model).split("/").pop()} · {(summary.elapsedMs / 1000).toFixed(1)}s
+          validator {String(summary.model).split("/").pop()}{summary.provider ? ` via ${summary.provider}` : ""} · {(summary.elapsedMs / 1000).toFixed(1)}s
         </div>
       </div>
-      <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded bg-surface-2">
-        <div className="h-full bg-good" style={{ width: `${summary.supportedPct}%` }} />
-      </div>
-      <div className="mt-1.5 text-xs text-ink-3">
-        Independent validator reads only the filing sections each claim cites, checks every figure against the source, and requires a verbatim quote it can locate. Claims it cannot support are held out of the briefing below.
-      </div>
+      {ran ? (
+        <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded bg-surface-2">
+          <div className="h-full bg-good" style={{ width: `${summary.supportedPct}%` }} />
+        </div>
+      ) : (
+        <div className="mt-2.5 rounded-lg border border-warn/50 bg-warn/5 px-3 py-2 text-xs text-warn">
+          No confidence score is shown. The independent reading did not run{summary.errors?.length ? ` (${summary.errors[0]})` : ""}, so every claim is marked Not validated and linked to its original filing and fetch time. Nothing is reported as verified without evidence.
+        </div>
+      )}
+      <button type="button" onClick={() => setOpen((o) => !o)} className="mt-2 text-xs text-ink-2 underline decoration-line underline-offset-2">
+        {open ? "Hide" : "Show"} how each claim was checked and the SEC documents used
+      </button>
+      {open ? (
+        <div className="mt-2 grid gap-2 text-[13px] md:grid-cols-2">
+          <div>
+            <div className="mb-1 text-xs uppercase tracking-[0.8px] text-ink-3">Four checks, in plain English</div>
+            <div className="mb-1"><span className="font-semibold">Citation found.</span> <span className="text-ink-2">The claim points at a filing section that was actually read. A claim with no citation is flagged.</span></div>
+            <div className="mb-1"><span className="font-semibold">Source content checked.</span> <span className="text-ink-2">Only the cited text is handed to the validator. It never sees the writer's prompt or the rest of the filing.</span></div>
+            <div className="mb-1"><span className="font-semibold">Numbers match the filing.</span> <span className="text-ink-2">Every figure in the claim is searched for in the cited text, allowing for units (96,221 in millions equals $96.2 billion). {summary.figuresChecked ? `${summary.figuresMatched} of ${summary.figuresChecked} matched in this briefing.` : ""}</span></div>
+            <div className="mb-1"><span className="font-semibold">Source is authoritative.</span> <span className="text-ink-2">Each source is the primary document of an SEC EDGAR filing, identified by accession number, with the time it was fetched from sec.gov.</span></div>
+            <div className="mb-1"><span className="font-semibold">Independent reading.</span> <span className="text-ink-2">A second model, told to assume the claim may be wrong, returns supported, partial, or unsupported plus a verbatim quote that the server must locate in the filing. {summary.quotesFound != null ? `${summary.quotesFound} quotes located.` : ""}</span></div>
+          </div>
+          <div>
+            <div className="mb-1 text-xs uppercase tracking-[0.8px] text-ink-3">SEC documents used</div>
+            {docs.map((d) => (
+              <div key={d.accession} className="mb-1">
+                <a className="ab-cite" href={d.url} target="_blank" rel="noopener">{d.form} · filed {fmtDate(d.date)}</a>
+                <span className="ml-1 font-mono text-[11px] text-ink-3">{d.accession}</span>
+              </div>
+            ))}
+            <div className="mt-1 text-xs text-ink-3">Unsupported claims are removed from the briefing and listed under Held for review with the closest evidence. Partly supported claims stay visible with a Review label.</div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -250,10 +321,11 @@ function HeldForReview({ blocks, validations, index }: { blocks: Record<string, 
   for (const name of BLOCK_ORDER) {
     const v = validations[name];
     const b = blocks[name];
-    if (!v || !b || v.policy?.unsupported !== "exclude") continue;
+    if (!v || !b) continue;
     const items = (name === "summary" ? b.data?.paragraphs : b.data?.items) || [];
     for (const ch of v.claims || []) {
-      if (ch.verdict !== "unsupported") continue;
+      const heldOut = (ch.verdict === "unsupported" && v.policy?.unsupported === "exclude") || (ch.verdict === "unverified" && v.policy?.unverified === "hide");
+      if (!heldOut) continue;
       const it = items[ch.index];
       if (!it) continue;
       const text = name === "events" ? `${it.headline}. ${it.why_it_matters}` : name === "risks" ? `${it.title}. ${it.text}` : name === "questions" ? `${it.question} ${it.answer}` : it.text;
@@ -263,21 +335,77 @@ function HeldForReview({ blocks, validations, index }: { blocks: Record<string, 
   if (!held.length) return null;
   return (
     <div className="mt-2 rounded-lg border border-bad/40 bg-bad/5 px-4 py-3">
-      <h3 className="mb-1.5 text-[15px] font-semibold text-bad">Held for review: {held.length} claim{held.length > 1 ? "s" : ""} the validator could not support</h3>
-      <div className="mb-2.5 text-xs text-ink-3">Excluded from the briefing above. Shown here so the evidence stays one click away.</div>
+      <h3 className="mb-1.5 text-[15px] font-semibold text-bad">Held for review: {held.length} claim{held.length > 1 ? "s" : ""} not shown in the briefing</h3>
+      <div className="mb-2.5 text-xs text-ink-3">Either the validator could not support the claim or validation did not run. Each one keeps its original filing link and fetch time so the advisor can check it directly.</div>
       {held.map((h, k) => (
         <div key={k} className="mb-2.5 border-t border-line pt-2.5 text-[13px]">
           <div className="text-xs uppercase tracking-[0.8px] text-ink-3">{BLOCK_TITLES[h.block]}</div>
           <div className="text-ink-2 line-through decoration-bad/60">{h.text}</div>
-          <div className="mt-1 text-warn">{h.check.reason}</div>
+          <div className="mt-1 text-warn">{h.check.verdict === "unverified" ? "Validation did not run for this claim. " : ""}{h.check.reason}</div>
           {h.check.quote ? <div className="mt-1 text-ink-3">Closest evidence: “{h.check.quote}”</div> : null}
-          {h.check.sectionId && index[h.check.sectionId] ? (
+          {(h.check.sources || []).map((src) => (
+            <div key={src.sectionId} className="mt-1 text-xs text-ink-3">
+              <a className="ab-cite" href={src.url} target="_blank" rel="noopener">{src.form} · {src.item} · filed {fmtDate(src.filingDate)}</a>
+              <span className="ml-1">accession {src.accession} · fetched {fmtStamp(src.fetchedAt)}</span>
+            </div>
+          ))}
+          {!h.check.sources?.length && h.check.sectionId && index[h.check.sectionId] ? (
             <a className="ab-cite mt-1 inline-block" href={index[h.check.sectionId]!.url} target="_blank" rel="noopener">
               Open cited filing on sec.gov
             </a>
           ) : null}
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ---------- filing digest (no model): the safe failure state ---------- */
+function DigestPanel({ digest, reason }: { digest: Digest | null; reason: string | null }) {
+  if (!digest) return null;
+  return (
+    <div className="mb-4">
+      <div className="mb-3 rounded-lg border border-warn/50 bg-warn/5 px-4 py-3 text-sm">
+        <div className="font-semibold text-warn">AI briefing unavailable</div>
+        <div className="mt-1 text-ink-2">{reason || "The research model did not respond."}</div>
+        <div className="mt-1 text-xs text-ink-3">Nothing below was generated by a model. It is read directly from SEC EDGAR and XBRL, with the filing link and fetch time on every line.</div>
+      </div>
+      {digest.facts.length ? (
+        <div className="mb-3.5">
+          <h3 className="mb-2 text-[17px] font-semibold">Filed figures</h3>
+          {digest.facts.map((f, i) => (
+            <div key={i} className="mb-2">
+              <div>{f.text}</div>
+              <div className="text-xs text-ink-3">{f.source}</div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="mb-3.5">
+        <h3 className="mb-2 text-[17px] font-semibold">8-K filings in the last 90 days</h3>
+        {digest.events.length ? (
+          digest.events.map((e) => (
+            <div key={e.accession} className="grid grid-cols-[96px_1fr] gap-3 border-b border-line py-2 last:border-b-0">
+              <div className="tabular pt-0.5 text-[13px] text-ink-3">{fmtDate(e.date)}</div>
+              <div>
+                <div>{e.labels.join("; ")}</div>
+                <a className="ab-cite mt-1 inline-block" href={e.url} target="_blank" rel="noopener">8-K · Items {e.items.join(", ")} · {e.accession}</a>
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="text-xs text-ink-3">No 8-K filings in the last 90 days.</div>
+        )}
+      </div>
+      <div className="mb-3.5">
+        <h3 className="mb-2 text-[17px] font-semibold">Filing sections fetched</h3>
+        {digest.sectionsRead.map((x) => (
+          <div key={x.id} className="mb-1 text-[13px]">
+            <a className="ab-cite" href={x.url} target="_blank" rel="noopener">{x.id.split("|")[0]} · {x.id.split("|")[2]} · filed {fmtDate(x.id.split("|")[1])}</a>
+            <span className="ml-1 text-xs text-ink-3">{x.title} · {x.chars.toLocaleString()} chars{x.truncated ? " (truncated)" : ""} · fetched {fmtStamp(x.fetchedAt)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -544,7 +672,8 @@ function Block({ name, block, index, validation }: { name: string; block?: Block
   const checks: Record<number, ClaimCheck> = {};
   for (const c of validation?.claims || []) checks[c.index] = c;
   const exclude = validation?.policy?.unsupported === "exclude";
-  const show = (k: number) => !(exclude && checks[k]?.verdict === "unsupported");
+  const hideUnverified = validation?.policy?.unverified === "hide";
+  const show = (k: number) => !((exclude && checks[k]?.verdict === "unsupported") || (hideUnverified && checks[k]?.verdict === "unverified"));
   const mark = (k: number) => <ClaimMark check={checks[k]} index={index} />;
   return (
     <div className="mb-3.5">
@@ -661,6 +790,9 @@ function AdvisorBrief() {
   const [usage, setUsage] = useState<any>(null);
   const [validations, setValidations] = useState<Record<string, BlockValidation>>({});
   const [vsummary, setVsummary] = useState<ValidationSummary | null>(null);
+  const [digest, setDigest] = useState<Digest | null>(null);
+  const [researchFailed, setResearchFailed] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
   const [disclaimer, setDisclaimer] = useState("For internal advisor preparation only. Not investment advice.");
   const [pill, setPill] = useState<{ text: string; kind: "" | "live" | "err" }>({ text: "Lovable AI", kind: "" });
   const abortRef = useRef<AbortController | null>(null);
@@ -683,6 +815,9 @@ function AdvisorBrief() {
     setUsage(null);
     setValidations({});
     setVsummary(null);
+    setDigest(null);
+    setResearchFailed(null);
+    setElapsed(0);
     setPill({ text: "streaming", kind: "live" });
     setStatus({ text: `Resolving ${q} on SEC EDGAR`, state: "" });
     const t0 = performance.now();
@@ -722,6 +857,13 @@ function AdvisorBrief() {
           setBlocks((b) => ({ ...b, [data.name]: data }));
           if (data.elapsedMs != null) setStatus({ text: `${data.title} ready at ${(data.elapsedMs / 1000).toFixed(1)}s`, state: "" });
           break;
+        case "digest":
+          setDigest(data);
+          break;
+        case "research_failed":
+          setResearchFailed(String(data.message || "The research model did not respond."));
+          setPill({ text: "AI unavailable", kind: "err" });
+          break;
         case "validation":
           setValidations((v) => ({ ...v, [data.block]: data }));
           break;
@@ -731,11 +873,11 @@ function AdvisorBrief() {
           break;
         case "usage":
           setUsage(data.data);
-          if (data.data?.model) setPill({ text: "Lovable AI · " + String(data.data.model).split("/").pop(), kind: "live" });
+          if (data.data?.model && data.data?.calls > 0) setPill({ text: (data.data.provider ? String(data.data.provider) : "AI") + " · " + String(data.data.model).split("/").pop(), kind: "live" });
           break;
         case "done":
           setDisclaimer(data.disclaimer);
-          setStatus({ text: `Briefing complete in ${((performance.now() - t0) / 1000).toFixed(1)}s`, state: "done" });
+          setStatus(data.researchFailed ? { text: "Filing digest shown without a model. AI briefing unavailable.", state: "err" } : { text: `Briefing complete in ${((performance.now() - t0) / 1000).toFixed(1)}s`, state: "done" });
           setRunning(false);
           break;
         case "error":
@@ -785,6 +927,13 @@ function AdvisorBrief() {
       setRunning(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    const id = setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [running]);
 
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get("t");
@@ -838,6 +987,7 @@ function AdvisorBrief() {
           <div className="col-span-full flex min-h-[22px] items-center gap-3 text-sm text-ink-2">
             <span className={`ab-dot ${status.state === "done" ? "!animate-none bg-good" : status.state === "err" ? "!animate-none bg-bad" : ""}`} />
             <span>{status.text}</span>
+            {running ? <span className="font-mono text-xs text-ink-3">{elapsed}s</span> : null}
           </div>
         ) : null}
 
@@ -879,13 +1029,14 @@ function AdvisorBrief() {
             </div>
           ) : (
             <div className="ab-card">
-              <ValidationBar summary={vsummary} pending={Object.keys(validations).length > 0} />
-              {blocksShown ? (
+              <ValidationBar summary={vsummary} pending={Object.keys(validations).length > 0} filings={filings} />
+              {researchFailed ? <DigestPanel digest={digest} reason={researchFailed} /> : null}
+              {blocksShown && !(researchFailed && Object.keys(blocks).length === 0) ? (
                 <>
-                  {BLOCK_ORDER.map((n) => <Block key={n} name={n} block={blocks[n]} index={sectionIndex} validation={validations[n]} />)}
+                  {BLOCK_ORDER.filter((n) => !researchFailed || blocks[n]).map((n) => <Block key={n} name={n} block={blocks[n]} index={sectionIndex} validation={validations[n]} />)}
                   <HeldForReview blocks={blocks} validations={validations} index={sectionIndex} />
                 </>
-              ) : (
+              ) : researchFailed ? null : (
                 <>
                   <Skeleton />
                   <Skeleton width="85%" />
