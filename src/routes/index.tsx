@@ -366,7 +366,7 @@ function FilingsCard({ filings }: { filings: any }) {
 }
 
 /* ---------- briefing blocks ---------- */
-function Block({ name, block, index }: { name: string; block?: BlockEvent; index: Record<string, SectionMeta> }) {
+function Block({ name, block, index }: { name: string; block?: BlockEvent | undefined; index: Record<string, SectionMeta> }) {
   const title = block?.title ?? BLOCK_TITLES[name]!;
   const d = block?.data ?? null;
   return (
