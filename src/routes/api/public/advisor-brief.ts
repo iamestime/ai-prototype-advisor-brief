@@ -4,7 +4,8 @@
 // Data: SEC EDGAR (filings, XBRL company facts), Yahoo Finance chart endpoint (prototype quote source).
 // Intelligence: Lovable AI gateway (no vendor API key), one streamed NDJSON call, citation validation.
 // Validation: an independent agent reviews every claim against the cited filing text (see the validation section).
-// Env: LOVABLE_API_KEY (provided by Lovable AI), AI_MODEL, VALIDATOR_MODEL, VALIDATION_POLICY (exclude|flag), EDGAR_USER_AGENT.
+// Env: LOVABLE_API_KEY (Lovable AI), GEMINI_API_KEY and OPENAI_API_KEY (optional fallbacks), AI_MODEL, VALIDATOR_MODEL,
+//      VALIDATION_POLICY (exclude|flag), UNVERIFIED_POLICY (flag|hide), RESEARCH_TIMEOUT_MS, VALIDATOR_TIMEOUT_MS, EDGAR_USER_AGENT.
 import { createFileRoute } from "@tanstack/react-router";
 
 const CORS = {
@@ -14,15 +15,38 @@ const CORS = {
 };
 
 // Env is injected per request on the server runtime, so it is read inside the handler.
-type Cfg = { EDGAR_UA: string; AI_MODEL: string; VALIDATOR_MODEL: string; VALIDATION_POLICY: "exclude" | "flag" };
-let CFG: Cfg = { EDGAR_UA: "AdvisorBrief prototype contact@example.com", AI_MODEL: "google/gemini-2.5-pro", VALIDATOR_MODEL: "google/gemini-2.5-flash", VALIDATION_POLICY: "exclude" };
+type Cfg = {
+  EDGAR_UA: string;
+  AI_MODEL: string;
+  VALIDATOR_MODEL: string;
+  VALIDATION_POLICY: "exclude" | "flag";
+  UNVERIFIED_POLICY: "flag" | "hide";
+  RESEARCH_TIMEOUT_MS: number;
+  VALIDATOR_TIMEOUT_MS: number;
+  providers: Provider[];
+};
+type Provider = { name: string; url: string; key: string; mapModel: (m: string) => string };
+let CFG: Cfg = {
+  EDGAR_UA: "AdvisorBrief prototype contact@example.com", AI_MODEL: "google/gemini-2.5-flash", VALIDATOR_MODEL: "google/gemini-2.5-flash",
+  VALIDATION_POLICY: "exclude", UNVERIFIED_POLICY: "flag", RESEARCH_TIMEOUT_MS: 120000, VALIDATOR_TIMEOUT_MS: 45000, providers: [],
+};
 function readEnv(): Cfg {
   const e = process.env;
+  // Provider chain: every configured provider is tried in order; a 402 (credits), 429 (rate limit), or 5xx moves to the next.
+  // Lovable AI needs no key management; a Gemini API key (Google AI Studio) or an OpenAI key removes the single point of failure.
+  const providers: Provider[] = [];
+  if (e["LOVABLE_API_KEY"]) providers.push({ name: "lovable", url: "https://ai.gateway.lovable.dev/v1/chat/completions", key: e["LOVABLE_API_KEY"], mapModel: (m) => m });
+  if (e["GEMINI_API_KEY"]) providers.push({ name: "gemini", url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", key: e["GEMINI_API_KEY"], mapModel: (m) => m.replace(/^google\//, "") });
+  if (e["OPENAI_API_KEY"]) providers.push({ name: "openai", url: "https://api.openai.com/v1/chat/completions", key: e["OPENAI_API_KEY"], mapModel: (m) => (m.startsWith("openai/") ? m.slice(7) : e["OPENAI_MODEL"] ?? "gpt-4o-mini") });
   return {
     EDGAR_UA: e["EDGAR_USER_AGENT"] ?? "AdvisorBrief prototype contact@example.com",
     AI_MODEL: e["AI_MODEL"] ?? AI_MODEL_DEFAULT,
     VALIDATOR_MODEL: e["VALIDATOR_MODEL"] ?? VALIDATOR_MODEL_DEFAULT,
     VALIDATION_POLICY: e["VALIDATION_POLICY"] === "flag" ? "flag" : "exclude",
+    UNVERIFIED_POLICY: e["UNVERIFIED_POLICY"] === "hide" ? "hide" : "flag",
+    RESEARCH_TIMEOUT_MS: Number(e["RESEARCH_TIMEOUT_MS"] ?? 120000),
+    VALIDATOR_TIMEOUT_MS: Number(e["VALIDATOR_TIMEOUT_MS"] ?? 45000),
+    providers,
   };
 }
 
@@ -201,7 +225,7 @@ function derived(quote: any, fin: any) {
 const EIGHT_K_ITEMS: Record<string, string> = { "1.01": "Entry into a material agreement", "1.02": "Termination of a material agreement", "1.05": "Material cybersecurity incident", "2.01": "Completion of acquisition or disposition", "2.02": "Results of operations (earnings release)", "2.03": "Creation of a direct financial obligation", "2.05": "Costs associated with exit or disposal", "2.06": "Material impairment", "3.01": "Delisting or failure to satisfy listing rule", "3.02": "Unregistered sale of equity", "4.01": "Change in auditor", "4.02": "Non reliance on prior financials", "5.01": "Change in control", "5.02": "Officer or director change, compensation", "5.03": "Amendment to articles or bylaws", "5.07": "Shareholder vote results", "7.01": "Regulation FD disclosure", "8.01": "Other events", "9.01": "Financial statements and exhibits" };
 const ITEM_TITLES: Record<string, string> = { "Item 1": "Business", "Item 1A": "Risk Factors", "Item 7": "Management's Discussion and Analysis", "Item 2": "Management's Discussion and Analysis (10-Q)" };
 
-type Section = { id: string; form: string; filingDate: string; item: string; title: string; text: string; url: string; chars: number; truncated: boolean; meta: Record<string, unknown> };
+type Section = { id: string; form: string; filingDate: string; item: string; title: string; text: string; url: string; chars: number; truncated: boolean; accession: string; fetchedAt: string; meta: Record<string, unknown> };
 
 function htmlToText(html: string): string {
   let t = html.replace(/<ix:header[\s\S]*?<\/ix:header>/gi, "").replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, "");
@@ -242,7 +266,7 @@ function budget(text: string, key: string): [string, boolean] {
 
 function section(form: string, f: Filing, item: string, title: string, body: string, key: string, meta: Record<string, unknown> = {}): Section {
   const [text, truncated] = budget(body, key);
-  return { id: `${form}|${f.filingDate}|${item}`, form, filingDate: f.filingDate, item, title, text, url: f.url, chars: text.length, truncated, meta };
+  return { id: `${form}|${f.filingDate}|${item}`, form, filingDate: f.filingDate, item, title, text, url: f.url, chars: text.length, truncated, accession: f.accession, fetchedAt: new Date().toISOString(), meta };
 }
 
 function sections10k(html: string, f: Filing): Section[] {
@@ -285,7 +309,8 @@ function section8k(html: string, f: Filing): Section {
 //   google/gemini-2.5-flash is the fast, cheap option for a live room.
 
 const AI_GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
-const AI_MODEL_DEFAULT = "google/gemini-2.5-pro";
+// Flash puts the first block on screen in seconds; set AI_MODEL=google/gemini-2.5-pro for deeper reading at 30 to 40 seconds to first block.
+const AI_MODEL_DEFAULT = "google/gemini-2.5-flash";
 const VALIDATOR_MODEL_DEFAULT = "google/gemini-2.5-flash";
 
 const SYSTEM = `You are a senior equity research associate preparing a private briefing for a wealth management advisor who has a client call in ten minutes.
@@ -371,28 +396,56 @@ class Usage {
   input = 0;
   output = 0;
   model = "";
+  provider = "";
   add(u: any) {
     this.calls++;
     this.input += u?.prompt_tokens ?? 0;
     this.output += u?.completion_tokens ?? 0;
   }
   toDict() {
-    return { calls: this.calls, inputTokens: this.input, outputTokens: this.output, cacheWriteTokens: 0, cacheReadTokens: 0, model: this.model, mode: "live" };
+    return { calls: this.calls, inputTokens: this.input, outputTokens: this.output, cacheWriteTokens: 0, cacheReadTokens: 0, model: this.model, provider: this.provider, mode: "live" };
   }
 }
 
-async function aiFetch(body: Record<string, unknown>): Promise<Response> {
-  const key = process.env["LOVABLE_API_KEY"] ?? "";
-  if (!key) throw new Error("LOVABLE_API_KEY is not available. Enable Lovable AI for this project.");
-  const r = await fetch(AI_GATEWAY, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-    body: JSON.stringify(body),
-  });
-  if (r.status === 429) throw new Error("AI gateway rate limit reached. Try again in a moment.");
-  if (r.status === 402) throw new Error("AI gateway credits exhausted for this workspace.");
-  if (!r.ok) throw new Error(`AI gateway ${r.status}: ${(await r.text()).slice(0, 300)}`);
-  return r;
+class AiUnavailable extends Error {
+  attempts: string[];
+  constructor(attempts: string[]) {
+    super(attempts.length ? `AI unavailable: ${attempts.join("; ")}` : "No AI provider is configured (set LOVABLE_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY).");
+    this.attempts = attempts;
+  }
+}
+
+/** Calls the first provider that answers. 402, 429, and 5xx move to the next provider; the caller learns which one served. */
+async function aiFetch(body: Record<string, unknown>, timeoutMs = 90000): Promise<Response & { provider: string }> {
+  const attempts: string[] = [];
+  for (const p of CFG.providers) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const r = await fetch(p.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${p.key}` },
+        body: JSON.stringify({ ...body, model: p.mapModel(String(body.model)) }),
+        signal: ctl.signal,
+      });
+      if (r.ok) {
+        // keep the timer for streamed bodies; it is cleared when the body is consumed by the caller's read loop timing out
+        (r as any).provider = p.name;
+        (r as any).timer = timer;
+        return r as Response & { provider: string };
+      }
+      clearTimeout(timer);
+      const text = (await r.text()).slice(0, 200);
+      if (r.status === 402) attempts.push(`${p.name}: credits exhausted`);
+      else if (r.status === 429) attempts.push(`${p.name}: rate limited`);
+      else if (r.status >= 500) attempts.push(`${p.name}: ${r.status} ${text}`);
+      else { attempts.push(`${p.name}: ${r.status} ${text}`); }
+    } catch (e) {
+      clearTimeout(timer);
+      attempts.push(`${p.name}: ${(e as Error).name === "AbortError" ? `no response within ${Math.round(timeoutMs / 1000)}s` : String((e as Error).message ?? e)}`);
+    }
+  }
+  throw new AiUnavailable(attempts);
 }
 
 /** Streams all blocks in one call. Calls onBlock as each validated block line closes. Returns the set of block names delivered. */
@@ -402,6 +455,7 @@ async function streamBriefing(
   usage: Usage,
   model: string,
   onBlock: (name: string, data: any) => void,
+  timeoutMs = 120000,
 ): Promise<Set<string>> {
   const delivered = new Set<string>();
   const r = await aiFetch({
@@ -413,7 +467,8 @@ async function streamBriefing(
       { role: "system", content: SYSTEM },
       { role: "user", content: `${context}\n\n${briefingRequest(BLOCK_ORDER)}` },
     ],
-  });
+  }, timeoutMs);
+  usage.provider = r.provider;
   const reader = r.body!.getReader();
   const dec = new TextDecoder();
   let sseBuf = "";
@@ -468,6 +523,7 @@ async function streamBriefing(
     }
   }
   consumeLines(true);
+  clearTimeout((r as any).timer);
   return delivered;
 }
 
@@ -481,6 +537,7 @@ async function regenerateBlock(context: string, name: string, valid: Set<string>
       { role: "user", content: `${context}\n\n${briefingRequest([name])}` },
     ],
   });
+  clearTimeout((r as any).timer);
   const resp = await r.json();
   usage.add(resp.usage);
   const text: string = resp.choices?.[0]?.message?.content ?? "";
@@ -527,6 +584,8 @@ async function regenerateBlock(context: string, name: string, valid: Set<string>
 
 type Verdict = "supported" | "partial" | "unsupported" | "uncited" | "unverified";
 
+type CheckRow = { id: "source" | "citation" | "figures" | "authoritative" | "reading"; label: string; pass: boolean | null; detail: string };
+type SourceRef = { sectionId: string; form: string; item: string; filingDate: string; accession: string; url: string; fetchedAt: string; chars: number };
 type ClaimCheck = {
   index: number;
   verdict: Verdict;
@@ -537,6 +596,8 @@ type ClaimCheck = {
   url: string | null;
   figures: { checked: number; matched: number; unmatched: string[] };
   modelVerdict: string | null;
+  checks: CheckRow[];
+  sources: SourceRef[];
 };
 
 type BlockValidation = {
@@ -544,9 +605,10 @@ type BlockValidation = {
   status: "verified" | "flagged" | "excluded" | "unverified";
   claims: ClaimCheck[];
   counts: Record<Verdict, number>;
-  policy: { unsupported: "exclude" | "flag"; partial: "flag"; uncited: "flag"; unverified: "flag" };
+  policy: { unsupported: "exclude" | "flag"; partial: "flag"; uncited: "flag"; unverified: "flag" | "hide" };
   elapsedMs: number;
   model: string;
+  provider?: string;
   error?: string;
 };
 
@@ -687,10 +749,12 @@ async function validateBlock(
   sectionsById: Map<string, Section>,
   model: string,
   policyUnsupported: "exclude" | "flag",
+  policyUnverified: "flag" | "hide" = "flag",
+  timeoutMs = 45000,
 ): Promise<BlockValidation> {
   const started = Date.now();
   const items = claimItems(block, data);
-  const policy = { unsupported: policyUnsupported, partial: "flag", uncited: "flag", unverified: "flag" } as const;
+  const policy = { unsupported: policyUnsupported, partial: "flag", uncited: "flag", unverified: policyUnverified } as const;
   const counts: Record<Verdict, number> = { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 };
   const claims: ClaimCheck[] = [];
 
@@ -710,8 +774,9 @@ async function validateBlock(
         : counts.unsupported > 0 && policy.unsupported === "exclude" ? "excluded"
           : counts.partial + counts.uncited + counts.unsupported + counts.unverified > 0 ? "flagged"
             : "verified";
-    return { block, status, claims, counts, policy, elapsedMs: Date.now() - started, model };
+    return { block, status, claims, counts, policy, elapsedMs: Date.now() - started, model, provider };
   };
+  let provider = "";
 
   if (!items.length) return finish();
 
@@ -726,7 +791,9 @@ async function validateBlock(
       .map((p) => `[${p.index}] cites ${p.cites.join(", ")}\n${p.text}`)
       .join("\n\n")}\n\nReturn the JSON object now.`;
     try {
-      const r = await aiFetch({ model, temperature: 0, messages: [{ role: "system", content: VALIDATOR_SYSTEM }, { role: "user", content: user }] });
+      const r = await aiFetch({ model, temperature: 0, messages: [{ role: "system", content: VALIDATOR_SYSTEM }, { role: "user", content: user }] }, timeoutMs);
+      provider = r.provider;
+      clearTimeout((r as any).timer);
       const resp = await r.json();
       const text: string = resp.choices?.[0]?.message?.content ?? "";
       const m = /\{[\s\S]*\}/.exec(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
@@ -738,17 +805,33 @@ async function validateBlock(
   }
 
   for (const p of prepared) {
+    const secs = p.cites.map((id) => sectionsById.get(id)).filter((x): x is Section => !!x);
+    const sources: SourceRef[] = secs.map((x) => ({ sectionId: x.id, form: x.form, item: x.item, filingDate: x.filingDate, accession: x.accession, url: x.url, fetchedAt: x.fetchedAt, chars: x.chars }));
+    const srcLabel = secs.map((x) => `${x.form} ${x.item} filed ${x.filingDate}`).join("; ");
+    const checks: CheckRow[] = [
+      { id: "citation", label: "Citation found", pass: p.cites.length > 0 && secs.length === p.cites.length,
+        detail: p.cites.length ? (secs.length === p.cites.length ? `The claim cites ${secs.length} filing section${secs.length > 1 ? "s" : ""} that ${secs.length > 1 ? "were" : "was"} actually read: ${srcLabel}.` : "The claim cites a section id that was not among the sections read.") : "The writer attached no citation to this claim." },
+      { id: "source", label: "Source content checked", pass: secs.length > 0 ? true : null,
+        detail: secs.length ? `${secs.reduce((a, x) => a + x.chars, 0).toLocaleString()} characters of the cited filing text were sent to the validator as the only evidence.` : "No cited text to check against." },
+      { id: "figures", label: "Numbers match the filing", pass: p.figures.checked ? p.figures.unmatched.length === 0 : null,
+        detail: p.figures.checked ? (p.figures.unmatched.length ? `${p.figures.matched} of ${p.figures.checked} figures found in the cited text. Not found: ${p.figures.unmatched.join(", ")}.` : `All ${p.figures.checked} figure${p.figures.checked > 1 ? "s" : ""} in the claim appear in the cited text.`) : "The claim states no figures to check." },
+      { id: "authoritative", label: "Source is authoritative", pass: secs.length > 0 ? true : null,
+        detail: secs.length ? `Primary document of an SEC EDGAR filing (accession ${secs[0]!.accession}), fetched from sec.gov at ${secs[0]!.fetchedAt.replace("T", " ").slice(0, 19)} UTC.` : "No SEC source attached." },
+    ];
     const base: ClaimCheck = {
       index: p.index, verdict: "unverified", reason: "", quote: "", quoteFound: false,
-      sectionId: p.ev.primary?.id ?? null, url: p.ev.primary?.url ?? null, figures: p.figures, modelVerdict: null,
+      sectionId: p.ev.primary?.id ?? null, url: p.ev.primary?.url ?? null, figures: p.figures, modelVerdict: null, checks, sources,
     };
     if (!p.cites.length) {
+      checks.push({ id: "reading", label: "Independent reading", pass: null, detail: "Not run: nothing to read against." });
       claims.push({ ...base, verdict: "uncited", reason: "The writer cited no filing section for this claim." });
       continue;
     }
     const mo = modelOut.get(p.index);
     if (!mo) {
-      claims.push({ ...base, verdict: "unverified", reason: modelError ? `Validator unavailable: ${modelError}` : "Validator returned no verdict for this claim." });
+      const why = modelError ? `Validator unavailable: ${modelError}` : "Validator returned no verdict for this claim.";
+      checks.push({ id: "reading", label: "Independent reading", pass: null, detail: `${why} No confidence is shown; the deterministic checks above still stand and the original filing is linked.` });
+      claims.push({ ...base, verdict: "unverified", reason: why });
       continue;
     }
     const qf = mo.quote ? quoteFound(mo.quote, p.ev.text) : false;
@@ -766,6 +849,10 @@ async function validateBlock(
       verdict = "unverified"; reason = `Validator returned an unknown verdict "${mo.verdict}".`;
     }
     if (verdict === "supported" && p.figures.checked && p.figures.matched < p.figures.checked) verdict = "partial";
+    checks.push({ id: "reading", label: "Independent reading", pass: mo.verdict === "supported" ? qf : mo.verdict === "partial" ? null : false,
+      detail: mo.verdict === "supported"
+        ? (qf ? `A second model read only the cited text and found the claim stated there. Evidence quote located verbatim in the filing.` : `A second model called this supported but its evidence quote could not be located in the cited text, so the claim is marked for review.`)
+        : mo.verdict === "partial" ? `A second model found the main point in the cited text but a detail is missing or imprecise: ${mo.reason}` : `A second model could not find this in the cited text: ${mo.reason}` });
     claims.push({ ...base, verdict, reason, quote: mo.quote, quoteFound: qf, modelVerdict: mo.verdict });
   }
   const out = finish();
@@ -781,9 +868,43 @@ function summarizeValidation(blocks: BlockValidation[], started: number, model: 
     figuresChecked += c.figures.checked; figuresMatched += c.figures.matched;
     if (c.quoteFound) quotesFound++;
   }
-  const excluded = blocks.reduce((a, b) => a + (b.policy.unsupported === "exclude" ? b.counts.unsupported : 0), 0);
-  const status = claims === 0 ? "unverified" : counts.unverified === claims ? "unverified" : counts.supported === claims ? "verified" : "review";
-  return { claims, counts, excluded, flagged: counts.partial + counts.uncited + counts.unverified + (counts.unsupported - excluded), figuresChecked, figuresMatched, quotesFound, supportedPct: claims ? Math.round((100 * counts.supported) / claims) : 0, status, model, elapsedMs: Date.now() - started };
+  const excluded = blocks.reduce((a, b) => a + (b.policy.unsupported === "exclude" ? b.counts.unsupported : 0) + (b.policy.unverified === "hide" ? b.counts.unverified : 0), 0);
+  const validatorRan = blocks.some((b) => b.claims.some((c) => c.modelVerdict !== null));
+  const status = claims === 0 || !validatorRan ? "unverified" : counts.unsupported > 0 ? "unsupported" : counts.supported === claims ? "verified" : "review";
+  // Safe failure: if the independent reading did not run, no coverage figure is reported at all. A number here would be a false signal.
+  const supportedPct = validatorRan && claims ? Math.round((100 * counts.supported) / claims) : null;
+  const hidden = blocks.reduce((a, b) => a + (b.policy.unverified === "hide" ? b.counts.unverified : 0), 0);
+  const errors = [...new Set(blocks.map((b) => b.error).filter((x): x is string => !!x))];
+  return { claims, counts, excluded, hidden, flagged: counts.partial + counts.uncited + (hidden ? 0 : counts.unverified) + (counts.unsupported - (excluded - hidden)), figuresChecked, figuresMatched, quotesFound, supportedPct, validatorRan, status, model, provider: blocks.find((b) => b.provider)?.provider ?? null, errors, elapsedMs: Date.now() - started };
+}
+
+// ---------- Filing digest: what the advisor gets even when no model is available ----------
+// Built from structured data only (EDGAR submissions feed, XBRL company facts, section extraction). No model, no
+// inference, every line traceable to a filing or a data point. This is the safe failure state: the page never
+// shows an empty briefing, and nothing here can be a hallucination.
+function buildDigest(sel: any, fin: any, sections: Section[]) {
+  const fmt = (v: number | null | undefined) => (v == null ? "n/a" : (v < 0 ? "-$" : "$") + (Math.abs(v) >= 1e9 ? (Math.abs(v) / 1e9).toFixed(1) + "B" : (Math.abs(v) / 1e6).toFixed(0) + "M"));
+  const rev = fin?.revenue?.points ?? [], ni = fin?.netIncome?.points ?? [];
+  const facts: Array<{ text: string; source: string }> = [];
+  if (rev.length) {
+    const last = rev[rev.length - 1], prev = rev.length > 1 ? rev[rev.length - 2] : null, yago = rev.length > 4 ? rev[rev.length - 5] : null;
+    facts.push({ text: `Revenue ${fmt(last.value)} for ${last.label} (period end ${last.periodEnd})${prev ? `, ${last.value >= prev.value ? "up" : "down"} ${Math.abs(((last.value / prev.value) - 1) * 100).toFixed(0)}% from ${prev.label}` : ""}${yago ? ` and ${last.value >= yago.value ? "up" : "down"} ${Math.abs(((last.value / yago.value) - 1) * 100).toFixed(0)}% from ${yago.label}` : ""}.`, source: `SEC XBRL company facts, us-gaap:${fin.revenue.tag}, ${last.form} filed ${last.filed}` });
+    const n = ni.find((p: any) => p.frame === last.frame);
+    if (n) facts.push({ text: `Net income ${fmt(n.value)} for ${last.label}, a ${((n.value / last.value) * 100).toFixed(1)}% net margin.`, source: `SEC XBRL company facts, us-gaap:${fin.netIncome.tag}, ${n.form} filed ${n.filed}` });
+  }
+  if (fin?.sharesOutstanding) facts.push({ text: `${Number(fin.sharesOutstanding.value).toLocaleString()} shares outstanding as of ${fin.sharesOutstanding.asOf}.`, source: `SEC XBRL, dei:EntityCommonStockSharesOutstanding, ${fin.sharesOutstanding.form} filed ${fin.sharesOutstanding.filed}` });
+  const events = (sel["8-K"] ?? []).map((f: any) => {
+    const codes = String(f.items ?? "").split(",").map((c: string) => c.trim()).filter(Boolean);
+    return { date: f.filingDate, items: codes, labels: codes.map((c: string) => EIGHT_K_ITEMS[c] ?? `Item ${c}`), url: f.url, accession: f.accession };
+  });
+  const filings = ["10-K", "10-Q"].filter((k) => sel[k]).map((k) => ({ form: k, filingDate: sel[k].filingDate, reportDate: sel[k].reportDate, accession: sel[k].accession, url: sel[k].url }));
+  return {
+    generatedAt: new Date().toISOString(),
+    facts,
+    events,
+    filings,
+    sectionsRead: sections.map((x) => ({ id: x.id, title: x.title, chars: x.chars, truncated: x.truncated, url: x.url, fetchedAt: x.fetchedAt })),
+  };
 }
 
 // ---------- handler ----------
@@ -834,9 +955,15 @@ async function handleBrief(request: Request): Promise<Response> {
           }
         });
         send("sections", { sections: sections.map(({ text: _t, ...rest }) => rest), dataLatencyMs: Date.now() - t0 });
+        send("digest", buildDigest(sel, fin, sections));
 
+        if (!CFG.providers.length) {
+          send("research_failed", { message: "No AI provider is configured. Showing the filing digest built without a model.", attempts: [] });
+          send("done", { totalMs: Date.now() - t0, disclaimer: DISCLAIMER, researchFailed: true });
+          return;
+        }
         const model = CFG.AI_MODEL;
-        send("status", { message: `Reading filings with ${model.split("/").pop()}` });
+        send("status", { message: `Reading ${sections.length} filing sections with ${model.split("/").pop()} (first block usually lands in 10 to 40 seconds)` });
         const context = buildContext(sections, company);
         const valid = new Set(sections.map((s) => s.id));
         const sectionsById = new Map(sections.map((s) => [s.id, s] as [string, Section]));
@@ -849,30 +976,42 @@ async function handleBrief(request: Request): Promise<Response> {
         const validations: Promise<BlockValidation>[] = [];
         const validateAndSend = (name: string, data: any) => {
           send("validation", { block: name, status: "validating" });
-          const p = validateBlock(name, data, sectionsById, CFG.VALIDATOR_MODEL, CFG.VALIDATION_POLICY)
-            .catch((e) => ({ block: name, status: "unverified", claims: [], counts: { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 }, policy: { unsupported: CFG.VALIDATION_POLICY, partial: "flag", uncited: "flag", unverified: "flag" }, elapsedMs: 0, model: CFG.VALIDATOR_MODEL, error: String((e as Error).message ?? e) }) as BlockValidation)
+          const p = validateBlock(name, data, sectionsById, CFG.VALIDATOR_MODEL, CFG.VALIDATION_POLICY, CFG.UNVERIFIED_POLICY, CFG.VALIDATOR_TIMEOUT_MS)
+            .catch((e) => ({ block: name, status: "unverified", claims: [], counts: { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 }, policy: { unsupported: CFG.VALIDATION_POLICY, partial: "flag", uncited: "flag", unverified: CFG.UNVERIFIED_POLICY }, elapsedMs: 0, model: CFG.VALIDATOR_MODEL, error: String((e as Error).message ?? e) }) as BlockValidation)
             .then((v) => { send("validation", v); return v; });
           validations.push(p);
         };
 
-        const delivered = await streamBriefing(context, valid, usage, model, (name, data) => {
-          send("block", { name, title: BLOCKS[name]!.title, data, elapsedMs: Date.now() - started });
-          validateAndSend(name, data);
-        });
-        const missing = BLOCK_ORDER.filter((n) => !delivered.has(n));
-        if (missing.length) send("status", { message: `Regenerating ${missing.length} block${missing.length > 1 ? "s" : ""}` });
-        await Promise.all(
-          missing.map(async (n) => {
-            const data = await regenerateBlock(context, n, valid, usage, model).catch((e) => ({ items: [], error: String(e) }));
-            send("block", { name: n, title: BLOCKS[n]!.title, data, elapsedMs: Date.now() - started });
-            validateAndSend(n, data);
-          }),
-        );
-        send("status", { message: `Validating claims against the cited filings with ${CFG.VALIDATOR_MODEL.split("/").pop()}` });
-        const results = await Promise.all(validations);
-        send("validation_summary", summarizeValidation(results, started, CFG.VALIDATOR_MODEL));
+        let researchError: string | null = null;
+        let deliveredCount = 0;
+        try {
+          const delivered = await streamBriefing(context, valid, usage, model, (name, data) => {
+            deliveredCount++;
+            send("block", { name, title: BLOCKS[name]!.title, data, elapsedMs: Date.now() - started });
+            validateAndSend(name, data);
+          }, CFG.RESEARCH_TIMEOUT_MS);
+          const missing = BLOCK_ORDER.filter((n) => !delivered.has(n));
+          if (missing.length) send("status", { message: `Regenerating ${missing.length} block${missing.length > 1 ? "s" : ""}` });
+          await Promise.all(
+            missing.map(async (n) => {
+              const data = await regenerateBlock(context, n, valid, usage, model).catch((e) => ({ items: [], error: String(e) }));
+              send("block", { name: n, title: BLOCKS[n]!.title, data, elapsedMs: Date.now() - started });
+              validateAndSend(n, data);
+            }),
+          );
+        } catch (e) {
+          // Safe failure: the research agent is unavailable or too slow. The digest (already sent) carries the filings,
+          // XBRL facts, and 8-K timeline with links and timestamps; nothing generated is shown as if it were verified.
+          researchError = (e as Error).name === "AbortError" ? `The research model did not finish within ${Math.round(CFG.RESEARCH_TIMEOUT_MS / 1000)} seconds.` : String((e as Error).message ?? e);
+          send("research_failed", { message: researchError, attempts: (e as AiUnavailable).attempts ?? [], blocksDelivered: deliveredCount });
+        }
+        if (validations.length) {
+          send("status", { message: `Validating claims against the cited filings with ${CFG.VALIDATOR_MODEL.split("/").pop()}` });
+          const results = await Promise.all(validations);
+          send("validation_summary", summarizeValidation(results, started, CFG.VALIDATOR_MODEL));
+        }
         send("usage", { data: { ...usage.toDict(), elapsedMs: Date.now() - started } });
-        send("done", { totalMs: Date.now() - t0, disclaimer: DISCLAIMER });
+        send("done", { totalMs: Date.now() - t0, disclaimer: DISCLAIMER, researchFailed: !!researchError });
       } catch (e) {
         send("error", { message: String((e as Error).message ?? e) });
       } finally {
