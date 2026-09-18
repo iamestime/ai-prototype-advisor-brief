@@ -3,7 +3,8 @@
 //
 // Data: SEC EDGAR (filings, XBRL company facts), Yahoo Finance chart endpoint (prototype quote source).
 // Intelligence: Lovable AI gateway (no vendor API key), one streamed NDJSON call, citation validation.
-// Env: LOVABLE_API_KEY (provided by Lovable AI), AI_MODEL (optional), EDGAR_USER_AGENT (recommended).
+// Validation: an independent agent reviews every claim against the cited filing text (see the validation section).
+// Env: LOVABLE_API_KEY (provided by Lovable AI), AI_MODEL, VALIDATOR_MODEL, VALIDATION_POLICY (exclude|flag), EDGAR_USER_AGENT.
 import { createFileRoute } from "@tanstack/react-router";
 
 const CORS = {
@@ -13,13 +14,15 @@ const CORS = {
 };
 
 // Env is injected per request on the server runtime, so it is read inside the handler.
-type Cfg = { EDGAR_UA: string; AI_MODEL: string };
-let CFG: Cfg = { EDGAR_UA: "AdvisorBrief prototype contact@example.com", AI_MODEL: "google/gemini-2.5-pro" };
+type Cfg = { EDGAR_UA: string; AI_MODEL: string; VALIDATOR_MODEL: string; VALIDATION_POLICY: "exclude" | "flag" };
+let CFG: Cfg = { EDGAR_UA: "AdvisorBrief prototype contact@example.com", AI_MODEL: "google/gemini-2.5-pro", VALIDATOR_MODEL: "google/gemini-2.5-flash", VALIDATION_POLICY: "exclude" };
 function readEnv(): Cfg {
   const e = process.env;
   return {
     EDGAR_UA: e["EDGAR_USER_AGENT"] ?? "AdvisorBrief prototype contact@example.com",
     AI_MODEL: e["AI_MODEL"] ?? AI_MODEL_DEFAULT,
+    VALIDATOR_MODEL: e["VALIDATOR_MODEL"] ?? VALIDATOR_MODEL_DEFAULT,
+    VALIDATION_POLICY: e["VALIDATION_POLICY"] === "flag" ? "flag" : "exclude",
   };
 }
 
@@ -283,6 +286,7 @@ function section8k(html: string, f: Filing): Section {
 
 const AI_GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
 const AI_MODEL_DEFAULT = "google/gemini-2.5-pro";
+const VALIDATOR_MODEL_DEFAULT = "google/gemini-2.5-flash";
 
 const SYSTEM = `You are a senior equity research associate preparing a private briefing for a wealth management advisor who has a client call in ten minutes.
 
@@ -502,6 +506,286 @@ async function regenerateBlock(context: string, name: string, valid: Set<string>
 }
 
 
+// ---------- Validation agent: independent, evidence scoped review of every generated claim ----------
+//
+// The research agent writes the briefing. This agent never sees the research prompt or the full filing
+// context. For each block it receives only the claims and the exact filing sections those claims cite, and
+// it is instructed to assume the claim may be wrong. Three checks combine into one verdict per claim:
+//
+//   1. Figure check (deterministic, no model). Every number in the claim ($96.2 billion, 75.0%, 4.25 gigawatts,
+//      2027) must appear in the cited text, allowing for the unit shifts filings use (96,221 in a table headed
+//      "in millions" matches "$96.2 billion"). A figure the source does not contain can never be "supported".
+//   2. Quote grounding (deterministic). The validator must return a verbatim quote from the evidence for each
+//      claim. The server checks that the quote really occurs in the cited text. A verdict without locatable
+//      evidence is downgraded, so the validator cannot bluff either.
+//   3. Independent reading (model). Supported, partial, or unsupported, with a one line reason.
+//
+// Policy: unsupported claims are excluded from the briefing view (kept in "Held for review" with the reason and
+// the evidence link); partial and uncited claims stay visible and are flagged; a validator failure marks the
+// block "unverified" and never removes content. The advisor sees status at the claim, block, and briefing level,
+// with the evidence one click away.
+
+type Verdict = "supported" | "partial" | "unsupported" | "uncited" | "unverified";
+
+type ClaimCheck = {
+  index: number;
+  verdict: Verdict;
+  reason: string;
+  quote: string;
+  quoteFound: boolean;
+  sectionId: string | null;
+  url: string | null;
+  figures: { checked: number; matched: number; unmatched: string[] };
+  modelVerdict: string | null;
+};
+
+type BlockValidation = {
+  block: string;
+  status: "verified" | "flagged" | "excluded" | "unverified";
+  claims: ClaimCheck[];
+  counts: Record<Verdict, number>;
+  policy: { unsupported: "exclude" | "flag"; partial: "flag"; uncited: "flag"; unverified: "flag" };
+  elapsedMs: number;
+  model: string;
+  error?: string;
+};
+
+const VALIDATOR_SYSTEM = `You are an independent fact checker for a wealth management compliance desk. You did not write the claims you are reviewing and you should assume any of them may be wrong.
+
+For each claim you receive the exact SEC filing text the writer cited. Judge each claim ONLY against that text.
+
+Verdicts:
+- "supported": every fact and figure in the claim is stated in the evidence, in substance. Paraphrase is fine; invention is not.
+- "partial": the main point is in the evidence but a figure, date, name, or qualifier is missing, imprecise, or overstated.
+- "unsupported": the evidence does not say this, contradicts it, or the claim relies on information outside the evidence.
+
+For every claim, return a verbatim quote of at most 40 words copied exactly from the evidence that best supports (or, for unsupported, most closely relates to) the claim. Do not paraphrase the quote. If nothing in the evidence relates to the claim, return an empty quote.
+
+Output only JSON: {"claims":[{"i":<index>,"verdict":"supported|partial|unsupported","quote":"...","reason":"<one sentence>"}]}`;
+
+// ---- claim extraction ----
+
+function claimText(block: string, item: any): string {
+  if (block === "summary") return String(item.text ?? "");
+  if (block === "events") return `${item.date ?? ""}: ${item.headline ?? ""}. ${item.why_it_matters ?? ""}`;
+  if (block === "risks") return `${item.title ?? ""}. ${item.text ?? ""}`;
+  if (block === "questions") return `${item.question ?? ""} ${item.answer ?? ""}`;
+  return String(item.text ?? "");
+}
+
+function claimItems(block: string, data: any): any[] {
+  return (block === "summary" ? data?.paragraphs : data?.items) ?? [];
+}
+
+// ---- figure check ----
+
+const UNIT_MULT: Record<string, number> = { thousand: 1e3, million: 1e6, billion: 1e9, trillion: 1e12, k: 1e3, m: 1e6, b: 1e9, bn: 1e9, mm: 1e6 };
+
+/** Numbers stated in a claim, with the scale a reader would infer from the surrounding word. */
+function claimFigures(text: string): Array<{ raw: string; value: number; scale: number; percent: boolean }> {
+  const out: Array<{ raw: string; value: number; scale: number; percent: boolean }> = [];
+  const re = /(?<![\w.])\$?\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*(%|percent|thousand|million|billion|trillion|bn|mm|k|m|b)?(?![\w])/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const raw = m[0].trim();
+    const numStr = (m[1] + (m[2] ?? "")).replace(/,/g, "");
+    const value = Number(numStr);
+    if (!Number.isFinite(value)) continue;
+    const unit = (m[3] ?? "").toLowerCase();
+    const percent = unit === "%" || unit === "percent";
+    // Bare 1 to 4 digit integers without a unit are usually years, item numbers, or counts; still checked, but
+    // years (1990 to 2039) and single digits are treated as low value and skipped to avoid noise.
+    if (!unit && ((value >= 1990 && value <= 2039) || value < 10)) continue;
+    out.push({ raw, value, scale: percent ? 1 : (UNIT_MULT[unit] ?? 1), percent });
+  }
+  return out;
+}
+
+/** Every numeric value in the evidence, expanded across the unit interpretations filings use. */
+function evidenceValues(text: string): number[] {
+  const vals: number[] = [];
+  const re = /(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const v = Number((m[1] + (m[2] ?? "")).replace(/,/g, ""));
+    if (!Number.isFinite(v)) continue;
+    vals.push(v);
+  }
+  return vals;
+}
+
+function figuresMatch(claimVal: number, claimScale: number, precisionDigits: number, ev: number[]): boolean {
+  const target = claimVal * claimScale;
+  const tol = Math.pow(10, -precisionDigits) * 0.51 * claimScale; // half a unit in the claim's last digit
+  // Interpretations of an evidence number: as written, or written in thousands / millions / billions.
+  const mults = [1, 1e3, 1e6, 1e9];
+  for (const v of ev) {
+    for (const k of mults) {
+      const cand = v * k;
+      if (Math.abs(cand - target) <= Math.max(tol, Math.abs(target) * 1e-9)) return true;
+      // the claim rounded (96.2 billion vs 96,221 million): compare at the claim's precision
+      const scaled = cand / claimScale;
+      if (Math.abs(scaled - claimVal) < Math.pow(10, -precisionDigits) * 0.51 + 1e-9) return true;
+    }
+  }
+  return false;
+}
+
+function checkFigures(claim: string, evidence: string): { checked: number; matched: number; unmatched: string[] } {
+  const figs = claimFigures(claim);
+  if (!figs.length) return { checked: 0, matched: 0, unmatched: [] };
+  const ev = evidenceValues(evidence);
+  const unmatched: string[] = [];
+  let matched = 0;
+  for (const f of figs) {
+    const decimals = (String(f.value).split(".")[1] ?? "").length;
+    if (figuresMatch(f.value, f.scale, decimals, ev)) matched++;
+    else unmatched.push(f.raw);
+  }
+  return { checked: figs.length, matched, unmatched };
+}
+
+// ---- quote grounding ----
+
+function norm(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function quoteFound(quote: string, evidence: string): boolean {
+  const q = norm(quote);
+  if (q.length < 12) return false;
+  const e = norm(evidence);
+  if (e.includes(q)) return true;
+  // tolerate a dropped word or punctuation: require most 5 word shingles to appear
+  const words = q.split(" ").filter(Boolean);
+  if (words.length < 6) return false;
+  let hit = 0, total = 0;
+  for (let i = 0; i + 5 <= words.length; i += 2) {
+    total++;
+    if (e.includes(words.slice(i, i + 5).join(" "))) hit++;
+  }
+  return total > 0 && hit / total >= 0.6;
+}
+
+// ---- the agent ----
+
+function buildEvidence(sectionIds: string[], sectionsById: Map<string, Section>): { text: string; primary: Section | null } {
+  const secs = sectionIds.map((id) => sectionsById.get(id)).filter((s): s is Section => !!s);
+  const text = secs.map((s) => `<evidence id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${s.text}\n</evidence>`).join("\n");
+  return { text, primary: secs[0] ?? null };
+}
+
+async function validateBlock(
+  block: string,
+  data: any,
+  sectionsById: Map<string, Section>,
+  model: string,
+  policyUnsupported: "exclude" | "flag",
+): Promise<BlockValidation> {
+  const started = Date.now();
+  const items = claimItems(block, data);
+  const policy = { unsupported: policyUnsupported, partial: "flag", uncited: "flag", unverified: "flag" } as const;
+  const counts: Record<Verdict, number> = { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 };
+  const claims: ClaimCheck[] = [];
+
+  // Deterministic pass first: figures and citation presence. This runs even if the model call fails.
+  const prepared = items.map((item, index) => {
+    const text = claimText(block, item);
+    const cites: string[] = Array.isArray(item.citations) ? item.citations : [];
+    const ev = buildEvidence(cites, sectionsById);
+    const figures = cites.length ? checkFigures(text, ev.text) : { checked: 0, matched: 0, unmatched: [] };
+    return { index, text, cites, ev, figures };
+  });
+
+  const finish = (): BlockValidation => {
+    for (const c of claims) counts[c.verdict]++;
+    const status: BlockValidation["status"] =
+      counts.unverified > 0 && claims.every((c) => c.verdict === "unverified") ? "unverified"
+        : counts.unsupported > 0 && policy.unsupported === "exclude" ? "excluded"
+          : counts.partial + counts.uncited + counts.unsupported + counts.unverified > 0 ? "flagged"
+            : "verified";
+    return { block, status, claims, counts, policy, elapsedMs: Date.now() - started, model };
+  };
+
+  if (!items.length) return finish();
+
+  // Model pass, scoped to the cited evidence only.
+  const toReview = prepared.filter((p) => p.cites.length && p.ev.text);
+  let modelOut = new Map<number, { verdict: string; quote: string; reason: string }>();
+  let modelError: string | undefined;
+  if (toReview.length) {
+    const evidenceBlocks = new Map<string, string>();
+    for (const p of toReview) for (const id of p.cites) { const s = sectionsById.get(id); if (s) evidenceBlocks.set(id, `<evidence id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${s.text}\n</evidence>`); }
+    const user = `EVIDENCE (the only source of truth for this review):\n${[...evidenceBlocks.values()].join("\n")}\n\nCLAIMS TO REVIEW (each lists the evidence ids its writer cited):\n${toReview
+      .map((p) => `[${p.index}] cites ${p.cites.join(", ")}\n${p.text}`)
+      .join("\n\n")}\n\nReturn the JSON object now.`;
+    try {
+      const r = await aiFetch({ model, temperature: 0, messages: [{ role: "system", content: VALIDATOR_SYSTEM }, { role: "user", content: user }] });
+      const resp = await r.json();
+      const text: string = resp.choices?.[0]?.message?.content ?? "";
+      const m = /\{[\s\S]*\}/.exec(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+      const parsed = m ? JSON.parse(m[0]) : {};
+      for (const c of parsed.claims ?? []) modelOut.set(Number(c.i), { verdict: String(c.verdict ?? "").toLowerCase(), quote: String(c.quote ?? ""), reason: String(c.reason ?? "") });
+    } catch (e) {
+      modelError = String((e as Error).message ?? e);
+    }
+  }
+
+  for (const p of prepared) {
+    const base: ClaimCheck = {
+      index: p.index, verdict: "unverified", reason: "", quote: "", quoteFound: false,
+      sectionId: p.ev.primary?.id ?? null, url: p.ev.primary?.url ?? null, figures: p.figures, modelVerdict: null,
+    };
+    if (!p.cites.length) {
+      claims.push({ ...base, verdict: "uncited", reason: "The writer cited no filing section for this claim." });
+      continue;
+    }
+    const mo = modelOut.get(p.index);
+    if (!mo) {
+      claims.push({ ...base, verdict: "unverified", reason: modelError ? `Validator unavailable: ${modelError}` : "Validator returned no verdict for this claim." });
+      continue;
+    }
+    const qf = mo.quote ? quoteFound(mo.quote, p.ev.text) : false;
+    let verdict: Verdict;
+    let reason = mo.reason;
+    if (mo.verdict === "unsupported") {
+      verdict = "unsupported";
+    } else if (mo.verdict === "partial") {
+      verdict = "partial";
+    } else if (mo.verdict === "supported") {
+      if (!qf) { verdict = "partial"; reason = `Validator called this supported but its evidence quote could not be located in the cited text. ${reason}`.trim(); }
+      else if (p.figures.unmatched.length) { verdict = "partial"; reason = `Figure${p.figures.unmatched.length > 1 ? "s" : ""} not found in the cited text: ${p.figures.unmatched.join(", ")}. ${reason}`.trim(); }
+      else verdict = "supported";
+    } else {
+      verdict = "unverified"; reason = `Validator returned an unknown verdict "${mo.verdict}".`;
+    }
+    if (verdict === "supported" && p.figures.checked && p.figures.matched < p.figures.checked) verdict = "partial";
+    claims.push({ ...base, verdict, reason, quote: mo.quote, quoteFound: qf, modelVerdict: mo.verdict });
+  }
+  const out = finish();
+  if (modelError) out.error = modelError;
+  return out;
+}
+
+function summarizeValidation(blocks: BlockValidation[], started: number, model: string) {
+  const counts: Record<Verdict, number> = { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 };
+  let claims = 0, figuresChecked = 0, figuresMatched = 0, quotesFound = 0;
+  for (const b of blocks) for (const c of b.claims) {
+    claims++; counts[c.verdict]++;
+    figuresChecked += c.figures.checked; figuresMatched += c.figures.matched;
+    if (c.quoteFound) quotesFound++;
+  }
+  const excluded = blocks.reduce((a, b) => a + (b.policy.unsupported === "exclude" ? b.counts.unsupported : 0), 0);
+  const status = claims === 0 ? "unverified" : counts.unverified === claims ? "unverified" : counts.supported === claims ? "verified" : "review";
+  return { claims, counts, excluded, flagged: counts.partial + counts.uncited + counts.unverified + (counts.unsupported - excluded), figuresChecked, figuresMatched, quotesFound, supportedPct: claims ? Math.round((100 * counts.supported) / claims) : 0, status, model, elapsedMs: Date.now() - started };
+}
+
 // ---------- handler ----------
 async function handleBrief(request: Request): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
@@ -555,20 +839,38 @@ async function handleBrief(request: Request): Promise<Response> {
         send("status", { message: `Reading filings with ${model.split("/").pop()}` });
         const context = buildContext(sections, company);
         const valid = new Set(sections.map((s) => s.id));
+        const sectionsById = new Map(sections.map((s) => [s.id, s] as [string, Section]));
         const usage = new Usage();
         usage.model = model;
         const started = Date.now();
-        const delivered = await streamBriefing(context, valid, usage, model, (name, data) =>
-          send("block", { name, title: BLOCKS[name]!.title, data, elapsedMs: Date.now() - started }),
-        );
+
+        // Validation agent runs alongside the research stream: each block is reviewed the moment it lands,
+        // while the research agent is still writing the next one.
+        const validations: Promise<BlockValidation>[] = [];
+        const validateAndSend = (name: string, data: any) => {
+          send("validation", { block: name, status: "validating" });
+          const p = validateBlock(name, data, sectionsById, CFG.VALIDATOR_MODEL, CFG.VALIDATION_POLICY)
+            .catch((e) => ({ block: name, status: "unverified", claims: [], counts: { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 }, policy: { unsupported: CFG.VALIDATION_POLICY, partial: "flag", uncited: "flag", unverified: "flag" }, elapsedMs: 0, model: CFG.VALIDATOR_MODEL, error: String((e as Error).message ?? e) }) as BlockValidation)
+            .then((v) => { send("validation", v); return v; });
+          validations.push(p);
+        };
+
+        const delivered = await streamBriefing(context, valid, usage, model, (name, data) => {
+          send("block", { name, title: BLOCKS[name]!.title, data, elapsedMs: Date.now() - started });
+          validateAndSend(name, data);
+        });
         const missing = BLOCK_ORDER.filter((n) => !delivered.has(n));
         if (missing.length) send("status", { message: `Regenerating ${missing.length} block${missing.length > 1 ? "s" : ""}` });
         await Promise.all(
           missing.map(async (n) => {
             const data = await regenerateBlock(context, n, valid, usage, model).catch((e) => ({ items: [], error: String(e) }));
             send("block", { name: n, title: BLOCKS[n]!.title, data, elapsedMs: Date.now() - started });
+            validateAndSend(n, data);
           }),
         );
+        send("status", { message: `Validating claims against the cited filings with ${CFG.VALIDATOR_MODEL.split("/").pop()}` });
+        const results = await Promise.all(validations);
+        send("validation_summary", summarizeValidation(results, started, CFG.VALIDATOR_MODEL));
         send("usage", { data: { ...usage.toDict(), elapsedMs: Date.now() - started } });
         send("done", { totalMs: Date.now() - t0, disclaimer: DISCLAIMER });
       } catch (e) {
