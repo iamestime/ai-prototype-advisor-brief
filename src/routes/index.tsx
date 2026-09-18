@@ -471,7 +471,7 @@ function AdvisorBrief() {
   const [blocksShown, setBlocksShown] = useState(false);
   const [usage, setUsage] = useState<any>(null);
   const [disclaimer, setDisclaimer] = useState("For internal advisor preparation only. Not investment advice.");
-  const [pill, setPill] = useState<{ text: string; kind: "" | "live" | "err" }>({ text: "ready", kind: "" });
+  const [pill, setPill] = useState<{ text: string; kind: "" | "live" | "err" }>({ text: "Lovable AI", kind: "" });
   const abortRef = useRef<AbortController | null>(null);
 
   const start = useCallback(async (raw: string) => {
@@ -531,7 +531,7 @@ function AdvisorBrief() {
           break;
         case "usage":
           setUsage(data.data);
-          if (data.data?.model) setPill({ text: "Live: " + data.data.model, kind: "live" });
+          if (data.data?.model) setPill({ text: "Lovable AI · " + String(data.data.model).split("/").pop(), kind: "live" });
           break;
         case "done":
           setDisclaimer(data.disclaimer);
@@ -699,10 +699,9 @@ function AdvisorBrief() {
               {usage
                 ? [
                     `model ${usage.model}`,
-                    `${usage.calls} calls`,
-                    `${(usage.inputTokens + usage.cacheWriteTokens + usage.cacheReadTokens).toLocaleString()} in (${usage.cacheReadTokens.toLocaleString()} cached)`,
-                    `${usage.outputTokens.toLocaleString()} out`,
-                    `est. $${usage.estimatedCostUsd.toFixed(3)}`,
+                    `${usage.calls} call${usage.calls === 1 ? "" : "s"}`,
+                    `${Number(usage.inputTokens || 0).toLocaleString()} in`,
+                    `${Number(usage.outputTokens || 0).toLocaleString()} out`,
                     `${(usage.elapsedMs / 1000).toFixed(1)}s`,
                   ].join(" · ")
                 : ""}
