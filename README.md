@@ -2,7 +2,7 @@
 
 ### One minute, one page, every claim traceable to a filing.
 
-[Live application](https://ai-prototype-advisor-brief.lovable.app/) · [Product deck](docs/Advisor_Brief_Deck.pptx) · [Engineering execution brief](docs/ENGINEERING_EXECUTION_PROMPT.md) · [Security policy](SECURITY.md)
+[Live application](https://ai-prototype-advisor-brief.lovable.app/) · [Figma design](https://www.figma.com/design/fD6W8sS8wV8ULVIsClo4sw/Advisor-Brief---AI-Prototype?node-id=0-1) · [Product deck](docs/Advisor_Brief_Deck.pptx) · [Engineering execution brief](docs/ENGINEERING_EXECUTION_PROMPT.md) · [Security policy](SECURITY.md)
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)
@@ -30,7 +30,7 @@ This project was built to make engineering judgment inspectable. The table below
 | Multi-agent orchestration | Evidence, research, review, deterministic verification, retrieval, Q&A, and guardrail responsibilities | Bounded inputs, outputs, evidence scopes, sequencing, and failure contracts |
 | Memory | Accession-keyed brief replay and bounded session/ticker conversation history | In-process adapter by default; durable Supabase Postgres adapter and migration |
 | Guardrails | Pre-inference refusal, source sanitization, citation allow-listing, output screening, fail-closed policies | Visible guardrail report for every briefing and follow-up answer |
-| AI frontend | Progressive, evidence-first advisor workspace rather than a chat transcript | Six-section brief, charts, live pipeline state, claim citations, validation details, follow-up Q&A |
+| AI frontend | Figma-designed, progressive, evidence-first advisor workspace rather than a chat transcript | Six-section brief, charts, live pipeline state, claim citations, validation details, follow-up Q&A |
 
 The prototype does not claim that an in-memory vector index is a managed vector database. For production scale, the same embedding contract can be persisted in Postgres with pgvector or a dedicated vector service. The current choice keeps the public exercise inexpensive, reproducible, and operational without hiding a database dependency.
 
@@ -193,6 +193,21 @@ The advisor workspace is an information-dense, responsive React application rath
 - Follow-up Q&A with visible `Gemini · <model>` provenance and filing sources
 - Session conversation memory and reviewed-brief replay
 - Live pipeline, retrieval mode, and guardrail outcomes for inspection
+
+### Figma design system and implementation contract
+
+The frontend was designed in [Figma](https://www.figma.com/design/fD6W8sS8wV8ULVIsClo4sw/Advisor-Brief---AI-Prototype?node-id=0-1) before implementation. The file is the visual source of truth for hierarchy, spacing, responsive intent, state transitions, and the relationship between narrative content and its evidence. The application is implemented directly in React and TypeScript; Figma is used for design governance, not as a runtime dependency or code-generation layer.
+
+| Design decision | Figma specification | Application behavior |
+| --- | --- | --- |
+| Advisor-first entry | Focused ticker/company search, demo entities, source and grounding promises | Keyboard-accessible search with deterministic input validation and clear starting context |
+| Progressive disclosure | Separate empty, streaming, and completed briefing states | SSE events populate market data, filings, narrative blocks, validation, and memory without blocking the full page |
+| Evidence beside analysis | Filing inventory, grounding status, citations, and validation occupy persistent workspace regions | Claims remain visually connected to form, item, accession, SEC URL, and verification state |
+| Financial scanability | Eight-quarter revenue and net-income chart paired with market context | SEC XBRL series are rendered as comparable fiscal periods with explicit source labels |
+| Operational transparency | Pipeline, model, timing, guardrail, and retrieval telemetry are first-class interface elements | Advisors can distinguish fetched facts, Gemini output, independent review, and source-derived continuity |
+| Dense but calm presentation | Dark navy canvas, restrained amber accent, compact typography, bordered information panels | Semantic tokens and reusable primitives preserve contrast, alignment, and hierarchy across viewport sizes |
+
+The design-to-code boundary is deliberate: visual composition comes from Figma; data authority, validation state, accessibility semantics, responsive behavior, and failure handling remain code-owned. This prevents a visually polished mockup from overstating what the system has actually verified.
 
 ## Backend and API surface
 
