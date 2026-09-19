@@ -1,5 +1,5 @@
-// Model provider chain. Every call tries the configured providers in order (Gemini, then OpenAI).
-// A 402, 429, or 5xx moves to the next provider. The caller learns which provider served the call.
+// Gemini transport shared by research, validation, embeddings, and Q&A.
+// Transient throttling and service failures are retried with bounded backoff.
 // Vendor detail never reaches the browser: `clientReason` returns a neutral sentence for advisors,
 // and the full attempt list goes to the server log (or to the client only when DEBUG_ERRORS is on).
 import type { Cfg, Provider } from "./config";
@@ -7,7 +7,7 @@ import type { Cfg, Provider } from "./config";
 export class AiUnavailable extends Error {
   attempts: string[];
   constructor(attempts: string[]) {
-    super(attempts.length ? `AI unavailable: ${attempts.join("; ")}` : "No model provider is configured (set GEMINI_API_KEY or OPENAI_API_KEY).");
+    super(attempts.length ? `AI unavailable: ${attempts.join("; ")}` : "Gemini is not configured (set GEMINI_API_KEY).");
     this.name = "AiUnavailable";
     this.attempts = attempts;
   }
@@ -34,28 +34,70 @@ export function logAiFailure(where: string, e: unknown) {
 async function tryProviders<T>(
   cfg: Cfg,
   timeoutMs: number,
-  attempt: (p: Provider, signal: AbortSignal) => Promise<{ ok: true; value: T } | { ok: false; status: number; text: string }>,
+  attempt: (
+    p: Provider,
+    signal: AbortSignal,
+  ) => Promise<
+    | { ok: true; value: T }
+    | { ok: false; status: number; text: string; retryAfterMs?: number }
+  >,
 ): Promise<{ value: T; provider: Provider["name"]; timer: ReturnType<typeof setTimeout> }> {
   const attempts: string[] = [];
   for (const p of cfg.providers) {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), timeoutMs);
-    try {
-      const r = await attempt(p, ctl.signal);
-      if (r.ok) return { value: r.value, provider: p.name, timer };
-      clearTimeout(timer);
-      if (r.status === 402) attempts.push(`${p.name}: billing (402)`);
-      else if (r.status === 429) attempts.push(`${p.name}: rate limited (429)`);
-      else attempts.push(`${p.name}: ${r.status} ${r.text.slice(0, 200)}`);
-      // 4xx other than 402 and 429 is a request problem that another provider is unlikely to fix, but the
-      // fallback is cheap and the second provider may accept the request shape. Continue.
-    } catch (e) {
-      clearTimeout(timer);
-      const err = e as Error;
-      attempts.push(`${p.name}: ${err.name === "AbortError" ? `no response within ${Math.round(timeoutMs / 1000)}s` : String(err.message ?? e)}`);
+    for (let n = 1; n <= cfg.AI_MAX_ATTEMPTS; n++) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), timeoutMs);
+      try {
+        const r = await attempt(p, ctl.signal);
+        if (r.ok) return { value: r.value, provider: p.name, timer };
+        clearTimeout(timer);
+
+        const retryable = r.status === 429 || r.status >= 500;
+        const label =
+          r.status === 402
+            ? "billing (402)"
+            : r.status === 429
+              ? "rate limited (429)"
+              : `${r.status} ${r.text.slice(0, 200)}`;
+        attempts.push(`${p.name} attempt ${n}: ${label}`);
+
+        if (!retryable || n === cfg.AI_MAX_ATTEMPTS) break;
+        await delay(retryDelayMs(n, r.retryAfterMs));
+      } catch (e) {
+        clearTimeout(timer);
+        const err = e as Error;
+        attempts.push(
+          `${p.name} attempt ${n}: ${
+            err.name === "AbortError"
+              ? `no response within ${Math.round(timeoutMs / 1000)}s`
+              : String(err.message ?? e)
+          }`,
+        );
+        if (n === cfg.AI_MAX_ATTEMPTS || err.name === "AbortError") break;
+        await delay(retryDelayMs(n));
+      }
     }
   }
   throw new AiUnavailable(attempts);
+}
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function retryDelayMs(attempt: number, retryAfterMs?: number): number {
+  if (retryAfterMs != null && Number.isFinite(retryAfterMs)) {
+    return Math.min(8_000, Math.max(0, retryAfterMs));
+  }
+  const exponential = Math.min(4_000, 350 * 2 ** (attempt - 1));
+  return exponential + Math.floor(Math.random() * 150);
+}
+
+function retryAfter(response: Response): number | undefined {
+  const raw = response.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return seconds * 1_000;
+  const date = Date.parse(raw);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
 }
 
 /** Chat completion. Returns the raw Response so streaming callers can read the body. */
@@ -68,7 +110,13 @@ export async function chat(cfg: Cfg, body: Record<string, unknown>, timeoutMs: n
       signal,
     });
     if (r.ok) return { ok: true, value: r };
-    return { ok: false, status: r.status, text: await r.text().catch(() => "") };
+    const retryAfterMs = retryAfter(r);
+    return {
+      ok: false,
+      status: r.status,
+      text: await r.text().catch(() => ""),
+      ...(retryAfterMs == null ? {} : { retryAfterMs }),
+    };
   });
   const r = out.value as ServedResponse;
   r.provider = out.provider;
@@ -99,7 +147,15 @@ export async function embed(cfg: Cfg, texts: string[], timeoutMs: number): Promi
         body: JSON.stringify({ model, input: texts }),
         signal,
       });
-      if (!r.ok) return { ok: false, status: r.status, text: await r.text().catch(() => "") };
+      if (!r.ok) {
+        const retryAfterMs = retryAfter(r);
+        return {
+          ok: false,
+          status: r.status,
+          text: await r.text().catch(() => ""),
+          ...(retryAfterMs == null ? {} : { retryAfterMs }),
+        };
+      }
       const j = await r.json();
       const rows: Array<{ index: number; embedding: number[] }> = j.data ?? [];
       const vectors = rows.sort((a, b) => a.index - b.index).map((x) => x.embedding);

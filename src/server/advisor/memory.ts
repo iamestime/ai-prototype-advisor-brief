@@ -11,9 +11,10 @@
 //
 // The default store is in process (per warm instance). MEMORY_BACKEND=supabase switches briefing and
 // conversation memory to Postgres through the Supabase service client, which survives restarts and is shared
-// across instances. The SQL for those tables is in deploy/sql/advisor_memory.sql. The interface is the same
+// across instances. The SQL for those tables is in supabase/migrations. The interface is the same
 // either way, so an AWS deployment can back it with DynamoDB or ElastiCache without touching the routes.
 import type { VectorIndex } from "./retrieval";
+import { readRuntimeEnv } from "../runtime-env";
 
 export type BriefingRecord = {
   key: string;
@@ -123,10 +124,17 @@ let store: MemoryStore | null = null;
 
 export async function getStore(): Promise<MemoryStore> {
   if (store) return store;
-  const backend = (typeof process !== "undefined" ? process.env["MEMORY_BACKEND"] : "") ?? "";
+  const env = readRuntimeEnv();
+  const backend = env["MEMORY_BACKEND"] ?? "";
   if (backend === "supabase") {
     try {
-      const { supabaseAdmin } = await import("../../integrations/supabase/client.server");
+      const url = env["SUPABASE_URL"];
+      const serviceKey = env["SUPABASE_SERVICE_ROLE_KEY"];
+      if (!url || !serviceKey) throw new Error("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing");
+      const { createClient } = await import("@supabase/supabase-js");
+      const supabaseAdmin = createClient(url, serviceKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
       // probe once; fall back to in process memory if the tables are not there
       const { error } = await (supabaseAdmin as any).from("advisor_briefings").select("key").limit(1);
       if (!error) { store = new SupabaseStore(supabaseAdmin); return store; }

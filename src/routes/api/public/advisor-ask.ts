@@ -27,6 +27,25 @@ Rules you never break:
 
 Output only JSON: {"answer":"...","citations":["<passage id>"],"quote":"<verbatim quote of at most 40 words from a passage that best supports the answer, or empty>","answerable":true|false}`;
 
+const ASK_RESPONSE_FORMAT = {
+  type: "json_schema",
+  json_schema: {
+    name: "filing_grounded_answer",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: {
+        answer: { type: "string" },
+        citations: { type: "array", items: { type: "string" } },
+        quote: { type: "string" },
+        answerable: { type: "boolean" },
+      },
+      required: ["answer", "citations", "quote", "answerable"],
+      additionalProperties: false,
+    },
+  },
+};
+
 function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json" } });
 }
@@ -88,6 +107,8 @@ async function handleAsk(request: Request): Promise<Response> {
       const served = await chatText(cfg, {
         model: cfg.AI_MODEL,
         temperature: 0.1,
+        reasoning_effort: "low",
+        response_format: ASK_RESPONSE_FORMAT,
         messages: [
           { role: "system", content: ASK_SYSTEM },
           ...history,

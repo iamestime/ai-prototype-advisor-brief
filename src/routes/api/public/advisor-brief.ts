@@ -9,7 +9,7 @@
 //   guardrails  input, rate, injection, output screening, reported to the UI               (guardrails.ts)
 //   retrieval   chunk, embed, index the filings for follow up questions                    (retrieval.ts)
 //   digest      no model fallback built from structured data                               (digest.ts)
-// Models: Gemini through GEMINI_API_KEY (OpenAI as optional fallback). Nothing routes through a platform gateway.
+// Models: Gemini through GEMINI_API_KEY. Nothing routes through a platform gateway or another model vendor.
 //
 // Events: resolved, filings, quote, financials, sections, digest, memory, status, block, validation,
 //         validation_summary, guardrails, index, research_failed, usage, done, error.
@@ -17,7 +17,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { CORS, DISCLAIMER, readEnv, type Cfg } from "../../../server/advisor/config";
 import { configureEdgar, financials, derived, type Section } from "../../../server/advisor/edgar";
 import { loadCompany, loadSections } from "../../../server/advisor/pipeline";
-import { BLOCKS, BLOCK_ORDER, Usage, buildContext, streamBriefing, regenerateBlock } from "../../../server/advisor/research";
+import { BLOCKS, BLOCK_ORDER, Usage, blockHasContent, buildContext, streamBriefing, regenerateBlock } from "../../../server/advisor/research";
 import { validateBlock, summarizeValidation, claimItems, claimText, type BlockValidation } from "../../../server/advisor/validation";
 import { buildDigest } from "../../../server/advisor/digest";
 import { briefGuardrails, clientKey, countInjectionLines, rateLimit, screenText, validateQuery } from "../../../server/advisor/guardrails";
@@ -27,6 +27,25 @@ import { AiUnavailable, clientReason, logAiFailure } from "../../../server/advis
 
 function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json" } });
+}
+
+/** Bound independent reads so one briefing cannot burst the model quota with six simultaneous calls. */
+function createLimiter(concurrency: number) {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  const release = () => {
+    active--;
+    waiting.shift()?.();
+  };
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    if (active >= concurrency) await new Promise<void>((resolve) => waiting.push(resolve));
+    active++;
+    try {
+      return await task();
+    } finally {
+      release();
+    }
+  };
 }
 
 async function handleBrief(request: Request): Promise<Response> {
@@ -85,8 +104,9 @@ async function handleBrief(request: Request): Promise<Response> {
         const sectionsChars = sections.reduce((a, s) => a + s.chars, 0);
         const injectionLines = sections.reduce((a, s) => a + countInjectionLines(s.text), 0);
 
-        // Retrieval index for follow up questions, built in the background while the briefing streams.
-        const indexJob = (async () => {
+        // Defer retrieval embeddings until the narrative and independent reads are complete so background
+        // work cannot starve the advisor-facing Gemini calls.
+        const buildRetrievalIndex = async () => {
           try {
             const idx = await buildIndex(cfg, key, sections);
             store.putIndex(idx);
@@ -95,13 +115,15 @@ async function handleBrief(request: Request): Promise<Response> {
             console.error(`[advisor-brief] index: ${(e as Error).message}`);
             send("index", { chunks: 0, mode: "lexical", embedModel: null, provider: null, buildMs: 0 });
           }
-        })();
+        };
 
         let researchFailed = false;
         let validatorRan = false;
         let claims = 0;
         let outputFlags = 0;
         let droppedCitations = 0;
+        let narrativeClaims = 0;
+        const usableBlocks = new Set<string>();
         const usage = new Usage();
 
         if (!cfg.providers.length) {
@@ -119,6 +141,7 @@ async function handleBrief(request: Request): Promise<Response> {
 
           // Validation agent runs alongside the research stream: each block is reviewed the moment it lands.
           const validations: Promise<BlockValidation>[] = [];
+          const limitValidation = createLimiter(2);
           // Output screening (advice, forecast, guarantee, contact language) on every claim before it is sent.
           const screenBlock = (name: string, data: any) => {
             for (const item of claimItems(name, data)) {
@@ -128,8 +151,10 @@ async function handleBrief(request: Request): Promise<Response> {
             droppedCitations += Number(data?.droppedCitations ?? 0);
           };
           const validateAndSend = (name: string, data: any) => {
+            narrativeClaims += claimItems(name, data).length;
+            if (blockHasContent({ block: name, ...data })) usableBlocks.add(name);
             send("validation", { block: name, status: "validating" });
-            const p = validateBlock(cfg, name, data, sectionsById, cfg.VALIDATOR_MODEL, cfg.VALIDATION_POLICY, cfg.UNVERIFIED_POLICY, cfg.VALIDATOR_TIMEOUT_MS)
+            const p = limitValidation(() => validateBlock(cfg, name, data, sectionsById, cfg.VALIDATOR_MODEL, cfg.VALIDATION_POLICY, cfg.UNVERIFIED_POLICY, cfg.VALIDATOR_TIMEOUT_MS))
               .catch((e) => {
                 logAiFailure(`validateBlock ${name}`, e);
                 return { block: name, status: "unverified", claims: [], counts: { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 }, policy: { unsupported: cfg.VALIDATION_POLICY, partial: "flag", uncited: "flag", unverified: cfg.UNVERIFIED_POLICY }, elapsedMs: 0, model: cfg.VALIDATOR_MODEL, error: "the independent reading service did not respond" } as BlockValidation;
@@ -172,10 +197,22 @@ async function handleBrief(request: Request): Promise<Response> {
             claims = summary.claims;
             send("validation_summary", summary);
           }
+          const incompleteBlocks = BLOCK_ORDER.filter((name) => !usableBlocks.has(name));
+          if (!researchFailed && (narrativeClaims === 0 || incompleteBlocks.length > 0)) {
+            researchFailed = true;
+            send("research_failed", {
+              message: narrativeClaims === 0
+                ? "The narrative service returned no usable filing-grounded claims. The filing digest is shown instead."
+                : `The narrative service did not complete ${incompleteBlocks.length} required section${incompleteBlocks.length === 1 ? "" : "s"}. The completed sections and filing digest are shown.`,
+              code: narrativeClaims === 0 ? "empty_narrative" : "incomplete_narrative",
+              blocksDelivered: deliveredCount,
+              incompleteBlocks,
+            });
+          }
           if (usage.calls > 0) send("usage", { data: { ...usage.toDict(), elapsedMs: Date.now() - started } });
         }
 
-        await indexJob;
+        await buildRetrievalIndex();
         send("guardrails", briefGuardrails({ query: q, sectionsChars, injectionLines, citationsDropped: droppedCitations, outputFlags, claims, validatorRan, rateRemaining: rate.remaining }));
         send("done", { totalMs: Date.now() - t0, disclaimer: DISCLAIMER, researchFailed, fromMemory: false });
 

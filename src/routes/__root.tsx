@@ -98,9 +98,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     ],
     scripts: [
       {
-        // Theme before first paint: saved choice, else the system preference. Avoids a flash of the wrong mode.
+        // Theme before first paint: preserve an explicit choice; otherwise start dark.
         children:
-          "(function(){try{var t=localStorage.getItem('ab-theme');if(!t){t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'}if(t==='dark'){document.documentElement.classList.add('dark')}}catch(e){}})();",
+          "(function(){try{var t=localStorage.getItem('ab-theme');if(t!=='light'&&t!=='dark'){t='dark'}document.documentElement.classList.toggle('dark',t==='dark')}catch(e){document.documentElement.classList.add('dark')}})();",
       },
     ],
   }),

@@ -52,6 +52,69 @@ Shape: {"block":"questions","items":[{"question":"...","answer":"...","citations
 };
 export const BLOCK_ORDER = ["summary", "what_changed", "risks", "events", "talking_points", "questions"];
 
+export function blockResponseFormat(name: string) {
+  const citations = { type: "array", items: { type: "string" } };
+  const item =
+    name === "risks"
+      ? {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            severity: { type: "string", enum: ["high", "medium", "low"] },
+            text: { type: "string" },
+            citations,
+          },
+          required: ["title", "severity", "text", "citations"],
+          additionalProperties: false,
+        }
+      : name === "events"
+        ? {
+            type: "object",
+            properties: {
+              date: { type: "string" },
+              headline: { type: "string" },
+              why_it_matters: { type: "string" },
+              citations,
+            },
+            required: ["date", "headline", "why_it_matters", "citations"],
+            additionalProperties: false,
+          }
+        : name === "questions"
+          ? {
+              type: "object",
+              properties: {
+                question: { type: "string" },
+                answer: { type: "string" },
+                citations,
+              },
+              required: ["question", "answer", "citations"],
+              additionalProperties: false,
+            }
+          : {
+              type: "object",
+              properties: { text: { type: "string" }, citations },
+              required: ["text", "citations"],
+              additionalProperties: false,
+            };
+  const collection = name === "summary" ? "paragraphs" : "items";
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: `advisor_${name}`,
+      strict: true,
+      schema: {
+        type: "object",
+        properties: {
+          block: { type: "string", enum: [name] },
+          [collection]: { type: "array", items: item },
+        },
+        required: ["block", collection],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
 export function buildContext(sections: Section[], company: Company): string {
   const parts = [`<company name="${company.name}" ticker="${company.ticker}" fiscalYearEnd="${company["fiscalYearEnd"] ?? ""}" />`, "<sections>"];
   for (const s of sections) parts.push(`<section id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${sanitizeSource(s.text)}\n</section>`);
@@ -87,6 +150,55 @@ export function tryParseBlock(line: string): any | null {
   }
 }
 
+export function blockHasContent(block: any): boolean {
+  const name = String(block?.block ?? "");
+  const items = name === "summary" ? block?.paragraphs : block?.items;
+  if (!Array.isArray(items)) return false;
+  // A company may genuinely have no recent 8-K entries. Every other narrative block must contain claims.
+  return name === "events" || items.length > 0;
+}
+
+/**
+ * Pull complete top-level JSON objects from arbitrary model text. Streaming providers may split an object
+ * anywhere, wrap NDJSON in a markdown fence, or pretty-print it across several lines. Newline parsing loses
+ * those blocks; brace-aware parsing preserves them while correctly ignoring braces inside JSON strings.
+ */
+export function extractJsonObjects(input: string): { objects: string[]; rest: string } {
+  const objects: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i]!;
+    if (start < 0) {
+      if (ch === "{") {
+        start = i;
+        depth = 1;
+        inString = false;
+        escaped = false;
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) {
+      objects.push(input.slice(start, i + 1));
+      start = -1;
+    }
+  }
+
+  return { objects, rest: start >= 0 ? input.slice(start) : "" };
+}
+
 export class Usage {
   calls = 0;
   input = 0;
@@ -119,6 +231,7 @@ export async function streamBriefing(
     stream: true,
     stream_options: { include_usage: true },
     temperature: 0.2,
+    reasoning_effort: "low",
     messages: [
       { role: "system", content: SYSTEM },
       { role: "user", content: `${context}\n\n${briefingRequest(BLOCK_ORDER)}` },
@@ -129,23 +242,12 @@ export async function streamBriefing(
   const dec = new TextDecoder();
   let sseBuf = "";
   let textBuf = "";
-  const consumeLines = (final = false) => {
-    let idx;
-    while ((idx = textBuf.indexOf("\n")) >= 0) {
-      const line = textBuf.slice(0, idx);
-      textBuf = textBuf.slice(idx + 1);
-      const obj = tryParseBlock(line);
-      if (obj && !delivered.has(obj.block)) {
-        const [block, dropped] = validateCitations(obj, valid);
-        block.droppedCitations = dropped;
-        delivered.add(obj.block);
-        onBlock(obj.block, block);
-      }
-    }
-    if (final && textBuf.trim()) {
-      const obj = tryParseBlock(textBuf);
-      textBuf = "";
-      if (obj && !delivered.has(obj.block)) {
+  const consumeObjects = () => {
+    const extracted = extractJsonObjects(textBuf);
+    textBuf = extracted.rest;
+    for (const candidate of extracted.objects) {
+      const obj = tryParseBlock(candidate);
+      if (obj && blockHasContent(obj) && !delivered.has(obj.block)) {
         const [block, dropped] = validateCitations(obj, valid);
         block.droppedCitations = dropped;
         delivered.add(obj.block);
@@ -153,65 +255,61 @@ export async function streamBriefing(
       }
     }
   };
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    sseBuf += dec.decode(value, { stream: true });
-    let nl;
-    while ((nl = sseBuf.indexOf("\n")) >= 0) {
-      let raw = sseBuf.slice(0, nl);
-      sseBuf = sseBuf.slice(nl + 1);
-      if (raw.endsWith("\r")) raw = raw.slice(0, -1);
-      if (!raw.startsWith("data: ")) continue;
-      const payload = raw.slice(6).trim();
-      if (payload === "[DONE]") continue;
-      try {
-        const evt = JSON.parse(payload);
-        if (evt.usage) usage.add(evt.usage);
-        const delta = evt.choices?.[0]?.delta?.content;
-        if (typeof delta === "string" && delta) {
-          textBuf += delta;
-          consumeLines();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      sseBuf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = sseBuf.indexOf("\n")) >= 0) {
+        let raw = sseBuf.slice(0, nl);
+        sseBuf = sseBuf.slice(nl + 1);
+        if (raw.endsWith("\r")) raw = raw.slice(0, -1);
+        if (!raw.startsWith("data: ")) continue;
+        const payload = raw.slice(6).trim();
+        if (payload === "[DONE]") continue;
+        try {
+          const evt = JSON.parse(payload);
+          if (evt.usage) usage.add(evt.usage);
+          const delta = evt.choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta) {
+            textBuf += delta;
+            consumeObjects();
+          }
+        } catch {
+          /* partial frame; wait for more */
         }
-      } catch {
-        /* partial frame; wait for more */
       }
     }
+    consumeObjects();
+  } finally {
+    clearTimeout((r as any).timer);
   }
-  consumeLines(true);
-  clearTimeout((r as any).timer);
   return delivered;
 }
 
 /** Targeted regeneration for any block the stream did not deliver. */
 export async function regenerateBlock(cfg: Cfg, context: string, name: string, valid: Set<string>, usage: Usage, model: string): Promise<any> {
-  const { text, usage: u } = await chatText(cfg, {
-    model,
-    temperature: 0.2,
-    messages: [
-      { role: "system", content: SYSTEM },
-      { role: "user", content: `${context}\n\n${briefingRequest([name])}` },
-    ],
-  }, 60000);
-  usage.add(u);
-  for (const line of text.split("\n")) {
-    const obj = tryParseBlock(line);
-    if (obj && obj.block === name) {
-      const [block, dropped] = validateCitations(obj, valid);
-      block.droppedCitations = dropped;
-      return block;
-    }
-  }
-  const m = /\{[\s\S]*\}/.exec(text);
-  if (m) {
-    try {
-      const [block, dropped] = validateCitations(JSON.parse(m[0]), valid);
-      block.droppedCitations = dropped;
-      return block;
-    } catch {
-      /* fall through */
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const { text, usage: u } = await chatText(cfg, {
+      model,
+      temperature: 0.2,
+      reasoning_effort: "low",
+      response_format: blockResponseFormat(name),
+      messages: [
+        { role: "system", content: SYSTEM },
+        { role: "user", content: `${context}\n\n${briefingRequest([name])}` },
+      ],
+    }, 60000);
+    usage.add(u);
+    for (const candidate of extractJsonObjects(text).objects) {
+      const obj = tryParseBlock(candidate);
+      if (obj && obj.block === name && blockHasContent(obj)) {
+        const [block, dropped] = validateCitations(obj, valid);
+        block.droppedCitations = dropped;
+        return block;
+      }
     }
   }
   return { items: [], error: `The model did not return a valid ${name} block.` };
 }
-

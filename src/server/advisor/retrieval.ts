@@ -2,9 +2,9 @@
 //
 // The briefing itself reads whole sections, because six blocks need the full picture. Follow up questions
 // ("Ask") retrieve the passages that matter, so the model sees only the evidence for that question and the
-// answer can be validated against exactly those passages. Vectors come from the embedding provider when one
-// is configured (Gemini gemini-embedding-001 or OpenAI text-embedding-3-small); without one, BM25 alone
-// answers and the UI says so. The index is a per company object kept in memory (see memory.ts); the same
+// answer can be validated against exactly those passages. Vectors come directly from Gemini using
+// gemini-embedding-001; without a configured key, BM25 alone answers and the UI says so. The index is a per
+// company object kept in memory (see memory.ts); the same
 // shape maps onto pgvector or OpenSearch in production (see docs/ARCHITECTURE.md).
 import type { Cfg } from "./config";
 import type { Section } from "./edgar";

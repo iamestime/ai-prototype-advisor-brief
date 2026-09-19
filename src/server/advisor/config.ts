@@ -1,12 +1,13 @@
 // Advisor Brief server configuration. Read once per request from the runtime environment.
 //
-// Model providers, in order of preference:
-//   1. Gemini (GEMINI_API_KEY): Google AI Studio, OpenAI compatible endpoint. Default for chat, validation, embeddings.
-//   2. OpenAI (OPENAI_API_KEY): optional fallback for chat and embeddings.
-// No AI call is ever routed through the Lovable AI gateway. Every model call carries its own key.
+// Model provider:
+//   Gemini (GEMINI_API_KEY): Google AI Studio, OpenAI-compatible endpoint.
+// No AI call is routed through a platform gateway or another model vendor.
+
+import { readRuntimeEnv } from "../runtime-env";
 
 export type Provider = {
-  name: "gemini" | "openai";
+  name: "gemini";
   chatUrl: string;
   embedUrl: string;
   key: string;
@@ -30,11 +31,12 @@ export type Cfg = {
   RATE_LIMIT_BRIEFS_PER_10M: number;
   RATE_LIMIT_ASKS_PER_10M: number;
   DEBUG_ERRORS: boolean;
+  AI_MAX_ATTEMPTS: number;
   providers: Provider[];
 };
 
-export const AI_MODEL_DEFAULT = "gemini-2.5-flash";
-export const VALIDATOR_MODEL_DEFAULT = "gemini-2.5-flash";
+export const AI_MODEL_DEFAULT = "gemini-3.8-flash";
+export const VALIDATOR_MODEL_DEFAULT = "gemini-3.8-flash";
 export const EMBED_MODEL_DEFAULT = "gemini-embedding-001";
 
 const num = (v: string | undefined, d: number) => {
@@ -42,36 +44,36 @@ const num = (v: string | undefined, d: number) => {
   return Number.isFinite(n) && n > 0 ? n : d;
 };
 
+const geminiModel = (value: string | undefined, fallback: string) => {
+  const model = (value ?? fallback).replace(/^google\//, "");
+  return /^(?:openai|anthropic|claude)\//.test(model) || /^(?:gpt-|o\d)/.test(model)
+    ? fallback
+    : model;
+};
+
 export function readEnv(): Cfg {
-  const e = (typeof process !== "undefined" ? process.env : {}) as Record<string, string | undefined>;
+  const e = readRuntimeEnv();
   const providers: Provider[] = [];
-  // GOOGLE_API_KEY is accepted as an alias for GEMINI_API_KEY.
-  if (e["GEMINI_API_KEY"] ?? e["GOOGLE_API_KEY"]) {
+  const geminiKey = [
+    e["GEMINI_API_KEY"],
+    e["GOOGLE_GENERATIVE_AI_API_KEY"],
+    e["GOOGLE_API_KEY"],
+  ].find((value) => value?.trim());
+  if (geminiKey) {
     const base = (e["GEMINI_BASE_URL"] ?? "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/$/, "");
     providers.push({
       name: "gemini",
       chatUrl: `${base}/chat/completions`,
       embedUrl: `${base}/embeddings`,
-      key: e["GEMINI_API_KEY"] ?? e["GOOGLE_API_KEY"]!,
-      mapChatModel: (m) => m.replace(/^google\//, "").replace(/^openai\/.*/, e["GEMINI_MODEL"] ?? AI_MODEL_DEFAULT),
+      key: geminiKey,
+      mapChatModel: (m) => geminiModel(m, geminiModel(e["GEMINI_MODEL"], AI_MODEL_DEFAULT)),
       mapEmbedModel: (m) => (m.startsWith("text-embedding-3") ? EMBED_MODEL_DEFAULT : m.replace(/^google\//, "")),
     });
   }
-  if (e["OPENAI_API_KEY"]) {
-    const base = (e["OPENAI_BASE_URL"] ?? "https://api.openai.com/v1").replace(/\/$/, "");
-    providers.push({
-      name: "openai",
-      chatUrl: `${base}/chat/completions`,
-      embedUrl: `${base}/embeddings`,
-      key: e["OPENAI_API_KEY"],
-      mapChatModel: (m) => (m.startsWith("openai/") ? m.slice(7) : /^gpt|^o\d/.test(m) ? m : e["OPENAI_MODEL"] ?? "gpt-4o-mini"),
-      mapEmbedModel: (m) => (m.startsWith("text-embedding-3") ? m : "text-embedding-3-small"),
-    });
-  }
   return {
-    EDGAR_UA: e["EDGAR_USER_AGENT"] ?? "AdvisorBrief prototype contact@example.com",
-    AI_MODEL: e["AI_MODEL"] ?? AI_MODEL_DEFAULT,
-    VALIDATOR_MODEL: e["VALIDATOR_MODEL"] ?? VALIDATOR_MODEL_DEFAULT,
+    EDGAR_UA: e["EDGAR_USER_AGENT"] ?? "AdvisorBrief public-demo https://aiqorx.com/contact",
+    AI_MODEL: geminiModel(e["AI_MODEL"] ?? e["GEMINI_MODEL"], AI_MODEL_DEFAULT),
+    VALIDATOR_MODEL: geminiModel(e["VALIDATOR_MODEL"] ?? e["GEMINI_MODEL"], VALIDATOR_MODEL_DEFAULT),
     EMBED_MODEL: e["EMBED_MODEL"] ?? EMBED_MODEL_DEFAULT,
     VALIDATION_POLICY: e["VALIDATION_POLICY"] === "flag" ? "flag" : "exclude",
     UNVERIFIED_POLICY: e["UNVERIFIED_POLICY"] === "hide" ? "hide" : "flag",
@@ -83,6 +85,7 @@ export function readEnv(): Cfg {
     RATE_LIMIT_BRIEFS_PER_10M: num(e["RATE_LIMIT_BRIEFS_PER_10M"], 12),
     RATE_LIMIT_ASKS_PER_10M: num(e["RATE_LIMIT_ASKS_PER_10M"], 40),
     DEBUG_ERRORS: e["DEBUG_ERRORS"] === "1" || e["DEBUG_ERRORS"] === "true",
+    AI_MAX_ATTEMPTS: Math.min(4, num(e["AI_MAX_ATTEMPTS"], 3)),
     providers,
   };
 }

@@ -58,6 +58,35 @@ For every claim, return a verbatim quote of at most 40 words copied exactly from
 
 Output only JSON: {"claims":[{"i":<index>,"verdict":"supported|partial|unsupported","quote":"...","reason":"<one sentence>"}]}`;
 
+const VALIDATOR_RESPONSE_FORMAT = {
+  type: "json_schema",
+  json_schema: {
+    name: "independent_claim_review",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: {
+        claims: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              i: { type: "integer" },
+              verdict: { type: "string", enum: ["supported", "partial", "unsupported"] },
+              quote: { type: "string" },
+              reason: { type: "string" },
+            },
+            required: ["i", "verdict", "quote", "reason"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["claims"],
+      additionalProperties: false,
+    },
+  },
+};
+
 // ---- claim extraction ----
 
 export function claimText(block: string, item: any): string {
@@ -255,7 +284,13 @@ export async function validateBlock(
       .map((p) => `[${p.index}] cites ${p.cites.join(", ")}\n${p.text}`)
       .join("\n\n")}\n\nReturn the JSON object now.`;
     try {
-      const served = await chatText(cfg, { model, temperature: 0, messages: [{ role: "system", content: VALIDATOR_SYSTEM }, { role: "user", content: user }] }, timeoutMs);
+      const served = await chatText(cfg, {
+        model,
+        temperature: 0,
+        reasoning_effort: "low",
+        response_format: VALIDATOR_RESPONSE_FORMAT,
+        messages: [{ role: "system", content: VALIDATOR_SYSTEM }, { role: "user", content: user }],
+      }, timeoutMs);
       provider = served.provider;
       const text: string = served.text;
       const m = /\{[\s\S]*\}/.exec(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));

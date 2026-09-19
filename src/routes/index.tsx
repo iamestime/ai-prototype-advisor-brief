@@ -55,7 +55,7 @@ type IndexInfo = { chunks: number; mode: "hybrid" | "lexical"; embedModel: strin
 type MemoryInfo = { hit: boolean; generatedAt?: string; ageMs?: number; backend: string };
 type LogRow = { t: number; text: string; state: "done" | "live" | "queued" };
 type RecentBriefing = { key: string; ticker: string; name: string; generatedAt: string; summary: { status: string | null; claims: number; supported: number; researchFailed: boolean; price: number | null; changePct: number | null } };
-type AskTurn = { role: "user" | "assistant"; content: string; at?: string; verdict?: string; refused?: boolean; sources?: Array<{ id: string; form: string; item: string; filingDate: string; accession: string; url: string }>; retrieval?: { mode: string; chunks: number; hits?: any[] }; guardrails?: GuardrailReport; quote?: string; quoteFound?: boolean | null; complianceFlags?: Array<{ label: string }>; pending?: boolean };
+type AskTurn = { role: "user" | "assistant"; content: string; at?: string; verdict?: string; refused?: boolean; sources?: Array<{ id: string; form: string; item: string; filingDate: string; accession: string; url: string }>; retrieval?: { mode: string; chunks: number; hits?: any[] }; guardrails?: GuardrailReport; quote?: string; quoteFound?: boolean | null; complianceFlags?: Array<{ label: string }>; model?: string; provider?: string; pending?: boolean };
 
 const VERDICT_LABEL: Record<Verdict, string> = { supported: "Verified", partial: "Review", unsupported: "Not supported", uncited: "No citation", unverified: "Not validated" };
 const VERDICT_CLASS: Record<Verdict, string> = { supported: "border-good/50 text-good", partial: "border-warn/60 text-warn", unsupported: "border-bad/60 text-bad", uncited: "border-warn/60 text-warn", unverified: "border-line text-ink-3" };
@@ -541,7 +541,7 @@ function AskPanel({ ticker, session, enabled, onTurns }: { ticker: string; sessi
     try {
       const r = await fetch("/api/public/advisor-ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ticker, question, session }) });
       const j = await r.json();
-      const a: AskTurn = r.ok ? { role: "assistant", content: j.answer, verdict: j.verdict, refused: j.refused, sources: j.sources, retrieval: j.retrieval, guardrails: j.guardrails, quote: j.quote, quoteFound: j.quoteFound, complianceFlags: j.complianceFlags } : { role: "assistant", content: j.error || "The question could not be answered right now.", verdict: "unavailable" };
+      const a: AskTurn = r.ok ? { role: "assistant", content: j.answer, verdict: j.verdict, refused: j.refused, sources: j.sources, retrieval: j.retrieval, guardrails: j.guardrails, quote: j.quote, quoteFound: j.quoteFound, complianceFlags: j.complianceFlags, model: j.model, provider: j.provider } : { role: "assistant", content: j.error || "The question could not be answered right now.", verdict: "unavailable" };
       setTurns((t) => [...t.slice(0, -1), a]);
     } catch {
       setTurns((t) => [...t.slice(0, -1), { role: "assistant", content: "The question could not be answered right now.", verdict: "unavailable" }]);
@@ -572,6 +572,7 @@ function AskPanel({ ticker, session, enabled, onTurns }: { ticker: string; sessi
                   <div className="text-[14.5px] leading-6">{t.content}</div>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
                     {verdictChip(t)}
+                    {t.provider === "gemini" ? <span className="ab-chip" title="Generated directly with the Google Gemini API">Gemini · {String(t.model || "").split("/").pop()}</span> : null}
                     {t.retrieval ? <span className="ab-chip" title="Passages retrieved for this answer">{t.retrieval.hits?.length ?? 0} passages · {t.retrieval.mode === "hybrid" ? "vector + lexical" : "lexical"} retrieval</span> : null}
                     {t.quote ? <span className="ab-chip" title={t.quote}>{t.quoteFound ? "quote located" : "quote not located"}</span> : null}
                   </div>
@@ -819,6 +820,7 @@ function AdvisorBrief() {
     const push = (text: string, state: LogRow["state"] = "done") => setLog((l) => [...l.filter((x) => x.state !== "live" || x.text !== text), { t: at(), text, state }]);
     const finishLive = (prefix: string, text: string) => setLog((l) => l.map((x) => (x.state === "live" && x.text.startsWith(prefix) ? { ...x, text, state: "done" as const } : x)));
     let blockCount = 0;
+    let failureMessage = "";
 
     const handle = (event: string, data: any) => {
       switch (event) {
@@ -852,7 +854,7 @@ function AdvisorBrief() {
           setLog((l) => { const i = l.findIndex((x) => x.state === "live" && x.text.startsWith("Streaming")); const row = { t: at(), text: `Streaming briefing, block ${blockCount} of 6`, state: (blockCount >= 6 ? "done" : "live") as LogRow["state"] }; return i >= 0 ? l.map((x, k) => (k === i ? row : x)) : [...l, row]; });
           if (data.elapsedMs != null) setStatus({ text: `${data.title} ready at ${secs(data.elapsedMs)}`, state: "" });
           break;
-        case "research_failed": setResearchFailed(String(data.message || "")); setMode("digest"); push("Narrative briefing not generated, digest shown"); break;
+        case "research_failed": failureMessage = String(data.message || ""); setResearchFailed(failureMessage); setMode("digest"); push(data.code === "incomplete_narrative" ? "Narrative briefing incomplete, digest shown" : "Narrative briefing not generated, digest shown"); break;
         case "validation": setValidations((v) => ({ ...v, [data.block]: data })); break;
         case "validation_summary":
           setVsummary(data);
@@ -864,7 +866,7 @@ function AdvisorBrief() {
         case "done":
           setDisclaimer(data.disclaimer);
           setTotalMs(data.totalMs);
-          setStatus(data.researchFailed ? { text: "Filing digest ready. Narrative sections were not generated for this briefing.", state: "done" } : { text: `Briefing complete in ${secs(data.totalMs)}${data.fromMemory ? " (from memory)" : ""}`, state: "done" });
+          setStatus(data.researchFailed ? { text: failureMessage || "Filing digest ready. Narrative sections were not generated for this briefing.", state: "done" } : { text: `Briefing complete in ${secs(data.totalMs)}${data.fromMemory ? " (from memory)" : ""}`, state: "done" });
           setMode(data.researchFailed ? "digest" : data.fromMemory ? "memory" : "done");
           setRunning(false);
           loadRecent();
