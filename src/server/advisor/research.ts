@@ -137,10 +137,22 @@ export function briefingRequest(names: string[]): string {
   return `Write these ${names.length} briefing blocks, one JSON object per line, in this order:\n\n${specs}\n\nSection ids you may cite are exactly the id attributes in <sections>. Begin with the first line now.`;
 }
 
+/** Remove internal citation markup if a model echoes the section protocol into client-facing prose. */
+export function cleanNarrativeText(value: unknown): string {
+  return String(value ?? "")
+    .replace(/\[?\s*<section\s+id=["'][^"']+["']\s*\/?\s*>\s*\]?/gi, "")
+    .replace(/\[?\s*&lt;section\s+id=(?:&quot;|["'])[^"']+(?:&quot;|["'])\s*\/?&gt;\s*\]?/gi, "")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export function validateCitations(block: any, valid: Set<string>): [any, number] {
   let dropped = 0;
   for (const key of ["paragraphs", "items"])
     for (const item of block?.[key] ?? []) {
+      for (const field of ["text", "title", "headline", "why_it_matters", "question", "answer"])
+        if (typeof item?.[field] === "string") item[field] = cleanNarrativeText(item[field]);
       const c: string[] = Array.isArray(item.citations) ? item.citations : [];
       const kept = c.filter((x) => valid.has(x));
       dropped += c.length - kept.length;

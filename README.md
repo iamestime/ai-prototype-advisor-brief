@@ -12,9 +12,27 @@
 
 Advisor Brief is a full-stack research prototype for the moment a wealth-management client asks about a company the advisor has not reviewed recently. Enter a ticker or company name and the application assembles a live market snapshot, eight quarters of filed results, a concise narrative, material changes, ranked risks, recent 8-K events, talking points, and grounded follow-up answers.
 
-The differentiator is not the summary. It is the evidence path. Every generated claim names the filing section used to write it, passes through an isolated independent review, and remains subject to deterministic citation, quote, and figure checks. If that review cannot complete, the narrative is withheld and the application falls back to a model-free SEC/XBRL digest.
+The differentiator is not the summary. It is the evidence path. Every generated claim names the filing section used to write it, passes through an isolated independent review, and remains subject to deterministic citation, quote, and figure checks. If Gemini capacity is unavailable, the system replaces unverified model output with a complete source-derived narrative assembled from structured XBRL facts and verbatim filing excerpts. The advisor still receives a useful brief, and the UI says exactly which verification path ran.
 
 > **Public demonstration exercise.** This repository demonstrates product judgment, client discovery translated into software, grounded AI orchestration, failure-aware engineering, and clear operating controls. It is not investment advice, a research recommendation, or a production compliance system.
+
+## Evaluation guide
+
+This project was built to make engineering judgment inspectable. The table below maps common Forward Deployed Engineering evaluation areas to concrete implementation evidence.
+
+| Evaluation area | Implementation | Evidence in the product |
+| --- | --- | --- |
+| Cloud deployment | TanStack Start and Nitro compiled to a Cloudflare module runtime, with GitHub as source of truth | Public HTTPS deployment, edge server routes, runtime-bound secrets, SSE streaming |
+| LLM evaluation | Independent Gemini review plus deterministic citation, quote, and figure checks | Claim verdicts, evidence coverage, located quotes, unmatched figures, held claims |
+| Embedding model | Direct Gemini embedding model, enabled explicitly | Semantic vectors, model provenance, cosine score beside lexical score |
+| Vector retrieval | Passage vectors held in an accession-keyed retrieval index; BM25 remains a complete fallback | Hybrid ranking diagnostics and deterministic lexical continuity |
+| Framework | React 19, TanStack Start/Router/Query, TypeScript, Vite, Nitro | Full-stack typed routes, SSR-capable shell, streamed server events |
+| Multi-agent orchestration | Evidence, research, review, deterministic verification, retrieval, Q&A, and guardrail responsibilities | Bounded inputs, outputs, evidence scopes, sequencing, and failure contracts |
+| Memory | Accession-keyed brief replay and bounded session/ticker conversation history | In-process adapter by default; durable Supabase Postgres adapter and migration |
+| Guardrails | Pre-inference refusal, source sanitization, citation allow-listing, output screening, fail-closed policies | Visible guardrail report for every briefing and follow-up answer |
+| AI frontend | Progressive, evidence-first advisor workspace rather than a chat transcript | Six-section brief, charts, live pipeline state, claim citations, validation details, follow-up Q&A |
+
+The prototype does not claim that an in-memory vector index is a managed vector database. For production scale, the same embedding contract can be persisted in Postgres with pgvector or a dedicated vector service. The current choice keeps the public exercise inexpensive, reproducible, and operational without hiding a database dependency.
 
 ## Product thesis
 
@@ -27,7 +45,7 @@ An advisor should not have to choose between reading hundreds of pages and trust
 | Check a statement quickly                | Filing, item, accession, SEC link, and fetch time on every claim     |
 | Avoid repeating an unsupported assertion | Independent Gemini review plus deterministic quote and figure checks |
 | Continue the conversation                | Session-aware follow-up Q&A grounded in retrieved filing passages    |
-| Remain useful during an AI incident      | Deterministic Filing Digest built from SEC EDGAR and XBRL            |
+| Remain useful during an AI incident      | Complete source-derived narrative plus deterministic Filing Digest   |
 
 Dark mode is the first-visit default. An explicit light-mode preference is preserved locally.
 
@@ -44,7 +62,7 @@ flowchart TD
 
     DATA --> MEMORY["Memory plane<br/>in-process or Supabase"]
     MODELS --> CONTROL
-    CONTROL -->|"reviewed brief or digest"| UI
+    CONTROL -->|"reviewed or source-derived brief"| UI
     CONTROL --> MEMORY
 ```
 
@@ -81,12 +99,13 @@ sequenceDiagram
     alt Independent review completed
         Trust-->>Advisor: Reviewed narrative + evidence coverage
         API->>Memory: Cache reviewed result by accessions
-    else Review unavailable
-        Trust-->>Advisor: Withhold narrative and show SEC digest
+    else Writer or reviewer unavailable
+        API->>Trust: Build from XBRL and filing excerpts
+        Trust-->>Advisor: Source-verified six-section brief
     end
 ```
 
-This sequence is intentionally conservative. The earlier design launched six reviewer calls while the writer stream was open, then started embedding batches against the same key. That fan-out looked responsive on paper but created avoidable quota contention. The current design uses one writer call, one compact review call, and no embedding calls in the default briefing path.
+This sequence is intentionally conservative. The earlier design launched six reviewer calls while the writer stream was open, then started embedding batches against the same key. That fan-out looked responsive on paper but created avoidable quota contention. The current design uses one writer call, one compact review call, and no embedding calls in the default briefing path. Bounded context, retry backoff, and a Gemini-only model ladder absorb transient capacity issues. If the provider remains unavailable, the orchestration completes with a fully cited source-derived brief rather than an empty state.
 
 ## Multi-agent orchestration
 
@@ -101,6 +120,7 @@ This sequence is intentionally conservative. The earlier design launched six rev
 | Retrieval agent        | Accession-keyed filing chunks and a question         | Ranked evidence passages                                    | Answer the advisor directly                                  |
 | Q&A agent              | Ranked passages and bounded conversation context     | Short cited answer with evidence quote                      | Recommend a trade, predict returns, or use outside knowledge |
 | Guardrail layer        | Inputs, source text, and outputs                     | Refusals, flags, allow-listed citations, audit details      | Be overridden by text found inside a filing                  |
+| Continuity agent       | Structured XBRL facts and verbatim filing excerpts  | Six source-derived narrative blocks                         | Present source-derived text as model-generated               |
 
 ### Model-call budget
 
@@ -128,10 +148,10 @@ flowchart LR
     D -->|Yes| S["Verified"]
     D -->|Partial| R
     D -->|Unsupported| H["Held from brief"]
-    V -->|Unavailable| F["Narrative withheld<br/>SEC digest shown"]
+    V -->|Unavailable| F["Source-derived brief<br/>SEC facts + filing excerpts"]
 ```
 
-The displayed percentage is evidence coverage, not a probability that the model is correct. It is calculated only when the independent review returns usable verdicts. A reviewer outage cannot produce a synthetic score, and an entirely unverified brief cannot enter memory.
+The displayed percentage is evidence coverage, not a probability that the model is correct. It is calculated from independent review results when Gemini completes. When the continuity path runs, the UI changes the label to **Source verified** and evaluates only claims assembled directly from structured SEC data or verbatim filing excerpts. The two modes are intentionally distinct.
 
 For each claim, the review path records:
 
@@ -141,7 +161,23 @@ For each claim, the review path records:
 - every numeric expression checked and any unmatched figure;
 - reviewer model, provider, elapsed time, verdict, and display policy.
 
-Unsupported claims are held by default. Partial and uncited claims remain visibly marked for review. When the independent service fails completely, generated narrative content is removed from the client-facing view rather than covered in warning labels.
+Unsupported claims are held by default. Partial and uncited claims remain visibly marked for review. Internal section protocols are stripped at the server boundary and again in the UI, so strings such as XML section tags cannot leak into advisor-facing prose. When Gemini generation or review fails completely, unverified model text is replaced by the source-derived continuity path.
+
+## LLM evaluation
+
+The review model does not grade the writer from memory or general knowledge. It receives each claim with a compact packet containing only the filing sections cited by that claim. The application then checks the reviewer rather than trusting it automatically.
+
+| Evaluation | Mechanism | Failure treatment |
+| --- | --- | --- |
+| Citation integrity | Returned section IDs must exist in the request allow-list | Unknown IDs are removed and counted |
+| Entailment | Independent Gemini context returns supported, partial, or unsupported | Partial claims remain marked; unsupported claims are held |
+| Evidence quote | Reviewer must return a short verbatim quote | Quote must be found again in the complete cited text |
+| Numerical consistency | Claim figures are normalized for filing units and reconciled | Unmatched values downgrade the claim to review |
+| Completeness | Six required blocks and non-empty claim collections | Missing blocks regenerate sequentially |
+| Compliance | Advice, forecasts, guarantees, and contact language are screened | Output is flagged or refused |
+| Provider continuity | Writer and reviewer use bounded retries and a Gemini model ladder | Source-derived narrative replaces unverifiable model output |
+
+The regression suite exercises arbitrary streaming boundaries, malformed and fenced JSON, invented citations, empty blocks, unit-scaled figures, missing quotes, provider throttling, model failover, reviewer outages, and the source-derived continuity path. Production acceptance runs fresh LLY, BA, NVDA, and ORCL briefings rather than replaying fixtures.
 
 ## Frontend
 
@@ -153,7 +189,7 @@ The advisor workspace is an information-dense, responsive React application rath
 - Six narrative sections with claim-level evidence state
 - Filing links, accession numbers, source sections, and fetch timestamps
 - Validation summary with evidence coverage, figure matches, located quotes, and held claims
-- Filing Digest fallback with deterministic SEC and XBRL content
+- Source-derived six-section continuity brief plus deterministic Filing Digest
 - Follow-up Q&A with visible `Gemini · <model>` provenance and filing sources
 - Session conversation memory and reviewed-brief replay
 - Live pipeline, retrieval mode, and guardrail outcomes for inspection
@@ -178,18 +214,34 @@ The briefing cache key combines the ticker with the sorted filing accessions use
 | Design system          | Tailwind CSS 4, Radix UI primitives, Lucide                                                  | Responsive layout, tokens, accessible controls, iconography      |
 | Visualization          | Recharts plus purpose-built SVG                                                              | Filed financial trends and market context                        |
 | Build and runtime      | TypeScript 5.8, Vite 8, Nitro 3, Cloudflare modules                                          | Compilation, server routes, runtime bindings, edge execution     |
-| Narrative and Q&A      | Google Gemini, default `gemini-3.8-flash`                                                    | Filing-grounded writing, independent review, cited follow-ups    |
+| Narrative and Q&A      | Google Gemini with configurable Flash-model failover                                          | Filing-grounded writing, independent review, cited follow-ups    |
 | Optional embeddings    | `gemini-embedding-001`                                                                       | Semantic retrieval when explicitly enabled                       |
 | Authoritative evidence | SEC EDGAR submissions, filing HTML, SEC XBRL Company Facts                                   | Entity resolution, source sections, provenance, filed financials |
 | Market snapshot        | Yahoo Finance chart endpoint                                                                 | Prototype price, volume, day range, and 52-week context          |
 | Retrieval              | BM25; optional cosine-ranked Gemini vectors                                                  | Bounded passage selection for follow-up questions                |
 | Memory                 | In-process store; optional Supabase Postgres                                                 | Reviewed brief replay and bounded conversation history           |
-| Verification           | Independent Gemini review plus deterministic TypeScript checks                               | Claim, citation, quote, and figure validation                    |
+| Verification           | Independent Gemini review, deterministic TypeScript checks, source-derived continuity         | Claim, citation, quote, figure, and outage-safe validation       |
 | Quality                | Node test runner, TypeScript compiler, production build, local and live acceptance harnesses | Regression and release evidence                                  |
 
-## Retrieval and follow-up answers
+## Embeddings, vector retrieval, and follow-up answers
 
 Filing sections are divided into overlapping passages and indexed lexically with BM25. The public demo defaults to lexical retrieval so semantic indexing cannot consume the same model quota needed for the writer, reviewer, or advisor’s question. Set `ENABLE_EMBEDDINGS=true` to add Gemini vectors and cosine scoring.
+
+```mermaid
+flowchart LR
+    F["Filing sections"] --> C["Overlapping passages"]
+    C --> B["BM25 index"]
+    C --> E["Gemini embeddings"]
+    E --> V["Cosine vector index"]
+    Q["Advisor question"] --> B
+    Q --> V
+    B --> R["Rank fusion"]
+    V --> R
+    R --> A["Bounded evidence packet"]
+    A --> G["Grounded Gemini answer"]
+```
+
+The vector index is keyed by filing accessions, so a new filing invalidates the old evidence set. Embedding failures never break Q&A: vector scores become unavailable and BM25 remains authoritative. The public deployment keeps vectors in the warm runtime for operational simplicity. The production path is explicit: persist the same vectors in Supabase Postgres with pgvector, add tenant-aware metadata filters, and retain BM25 for hybrid recall and graceful degradation.
 
 For a factual follow-up:
 
@@ -229,9 +281,9 @@ Guardrails execute in the request path, not as disclaimer copy added after gener
 - Full-text quote location and filing-unit figure reconciliation
 - Unsupported-claim hold policy
 - Vendor-neutral browser errors with provider details restricted to server logs
-- Digest-only fail-closed state when narrative generation or independent review fails
+- Source-derived narrative recovery when Gemini generation or independent review fails
 
-The Filing Digest is not a simulated AI response. Its figures, recent 8-K timeline, filing list, links, and timestamps are assembled directly from EDGAR and XBRL.
+The continuity brief and Filing Digest are not simulated AI responses. Their facts, excerpts, recent 8-K timeline, filing list, links, and timestamps are assembled directly from EDGAR and XBRL. The UI labels this mode **Source verified** so it cannot be confused with Gemini output.
 
 ## Secret boundary
 
@@ -271,6 +323,7 @@ Never prefix the Gemini key or Supabase service-role key with `VITE_`.
 | `GEMINI_API_KEY`            | For narrative features | None                              | Server-only Gemini credential                        |
 | `GEMINI_BASE_URL`           | No                     | Google OpenAI-compatible endpoint | Direct Gemini transport                              |
 | `AI_MODEL`                  | No                     | `gemini-3.8-flash`                | Writer and follow-up model                           |
+| `AI_FALLBACK_MODELS`        | No                     | Stable Gemini Flash ladder          | Capacity and model-availability failover             |
 | `VALIDATOR_MODEL`           | No                     | `gemini-3.8-flash`                | Independent reviewer model                           |
 | `AI_MAX_ATTEMPTS`           | No                     | `4`                               | Bounded attempts for retryable calls; capped at five |
 | `AI_CALL_GAP_MS`            | No                     | `750`                             | Gap between writer completion and independent review |
@@ -298,7 +351,7 @@ npm run test:smoke
 
 The GitHub Actions quality gate runs secret scanning, tests, type-checking, and the production build on every push to `main` and every pull request.
 
-The focused suite covers runtime-binding discovery, Gemini-only provider selection, retry recovery after throttling, arbitrary streaming chunk boundaries, fenced and formatted JSON, citation allow-listing, empty-block rejection, compact evidence selection, one-call whole-brief review, filing-unit figure reconciliation, quote location, and dark-first rendering.
+The focused suite covers runtime-binding discovery, Gemini-only provider selection, model failover after throttling, bounded writer context, arbitrary streaming chunk boundaries, fenced and formatted JSON, citation allow-listing, internal-markup removal, empty-block rejection, source-derived continuity, compact evidence selection, one-call whole-brief review, filing-unit figure reconciliation, quote location, and dark-first rendering.
 
 `npm run test:smoke` starts a local Gemini-compatible service while retaining the real SEC and market-data pipeline. It proves six streamed blocks, completed independent validation, optional hybrid retrieval, a sourced Gemini follow-up, and a pre-inference recommendation refusal.
 
@@ -325,7 +378,7 @@ src/server/advisor/validation.ts             Compact independent review and dete
 src/server/advisor/retrieval.ts              Passage chunking, BM25, optional embeddings
 src/server/advisor/guardrails.ts              Input, source, output, and compliance controls
 src/server/advisor/memory.ts                 In-process and Supabase memory adapters
-src/server/advisor/digest.ts                 Model-free SEC/XBRL fallback
+src/server/advisor/digest.ts                 SEC/XBRL digest and source-derived continuity brief
 scripts/check-secrets.mjs                    Tracked-tree credential gate
 scripts/live-acceptance.mjs                  Four-ticker production acceptance matrix
 supabase/migrations/                         Optional durable-memory schema

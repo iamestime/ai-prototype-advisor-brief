@@ -147,6 +147,27 @@ type Digest = {
     fetchedAt: string;
   }>;
 };
+
+function cleanDisplayText(value: string): string {
+  return value
+    .replace(/\[?\s*<section\s+id=["'][^"']+["']\s*\/?\s*>\s*\]?/gi, "")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function cleanBlockData(value: unknown): unknown {
+  if (typeof value === "string") return cleanDisplayText(value);
+  if (Array.isArray(value)) return value.map(cleanBlockData);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        key === "citations" ? item : cleanBlockData(item),
+      ]),
+    );
+  return value;
+}
 type GuardrailCheck = {
   id: string;
   label: string;
@@ -2011,6 +2032,7 @@ function AdvisorBrief() {
             break;
           case "block":
             blockCount++;
+            data.data = cleanBlockData(data.data);
             setBlocks((b) => ({ ...b, [data.name]: data }));
             if (blockCount === 1 && data.elapsedMs != null) setFirstBlockMs(data.elapsedMs);
             setLog((l) => {

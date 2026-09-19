@@ -3,12 +3,22 @@ import test from "node:test";
 
 import {
   buildContext,
+  cleanNarrativeText,
   blockHasContent,
   blockResponseFormat,
   extractJsonObjects,
   tryParseBlock,
   validateCitations,
 } from "../src/server/advisor/research.ts";
+
+test("removes internal section markup from client-facing narrative text", () => {
+  assert.equal(
+    cleanNarrativeText(
+      'Revenue increased [<section id="10-Q|2026-08-26|Item 2"/>], while supply remained constrained <section id="10-K|2026-02-25|Item 1A"/>.',
+    ),
+    "Revenue increased, while supply remained constrained.",
+  );
+});
 
 test("bounds filing sections before sending them to the writer", () => {
   const text = `opening evidence ${"x".repeat(30_000)} closing evidence`;
