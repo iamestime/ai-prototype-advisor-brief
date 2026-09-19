@@ -19,6 +19,7 @@ GEMINI_BASE_URL=http://127.0.0.1:9009 \
 AI_MODEL=gemini-test \
 VALIDATOR_MODEL=gemini-test \
 EMBED_MODEL=gemini-test \
+ENABLE_EMBEDDINGS=true \
 DEBUG_ERRORS=true \
 npm run dev -- --host 127.0.0.1 --port 4173 >"$smoke_dir/app.log" 2>&1 &
 app_pid=$!

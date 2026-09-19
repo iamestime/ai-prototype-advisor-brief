@@ -18,6 +18,8 @@ test("Cloudflare runtime bindings configure Gemini without exposing a client key
   assert.equal(cfg.providers[0]?.name, "gemini");
   assert.equal(cfg.providers[0]?.chatUrl, "https://example.test/gemini/chat/completions");
   assert.equal(cfg.AI_MODEL, "gemini-test");
+  assert.equal(cfg.ENABLE_EMBEDDINGS, false);
+  assert.equal(cfg.UNVERIFIED_POLICY, "hide");
 });
 
 test("an unrelated provider key cannot silently become the model backend", () => {

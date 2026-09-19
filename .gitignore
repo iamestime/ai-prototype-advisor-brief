@@ -16,6 +16,15 @@ dist-ssr
 .nitro
 *.local
 
+# Runtime configuration and secrets. Keep only the reviewed, value-free template.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars

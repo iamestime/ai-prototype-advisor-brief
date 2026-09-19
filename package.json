@@ -8,8 +8,10 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "npm run security:secrets && node --import tsx --test tests/*.test.ts",
     "test:smoke": "./scripts/smoke-local.sh",
+    "test:live": "node scripts/live-acceptance.mjs",
+    "security:secrets": "node scripts/check-secrets.mjs",
     "typecheck": "tsc --noEmit --pretty false",
     "lint": "eslint .",
     "format": "prettier --write ."

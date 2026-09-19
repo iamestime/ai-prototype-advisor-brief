@@ -152,7 +152,7 @@ export function briefGuardrails(args: {
     { id: "source", label: "Source text treated as data", status: args.injectionLines ? "fired" : "pass", detail: args.injectionLines ? `${args.injectionLines} instruction shaped line(s) removed from filing text before the model saw it.` : `${args.sectionsChars.toLocaleString()} characters of filing text passed to the model inside data tags; no instruction shaped lines found.` },
     { id: "citations", label: "Citations enforced", status: args.citationsDropped ? "fired" : "pass", detail: args.citationsDropped ? `${args.citationsDropped} citation(s) pointed at sections that were never sent and were dropped.` : "Every citation points at a section that was actually read." },
     { id: "output", label: "Output screened", status: args.outputFlags ? "fired" : "pass", detail: args.outputFlags ? `${args.outputFlags} claim(s) contained advice, forecast, guarantee, or contact language and were flagged for compliance.` : "No advice, forecast, guarantee, or contact language in the generated text." },
-    { id: "validation", label: "Independent validation", status: args.validatorRan ? "pass" : "skipped", detail: args.validatorRan ? `${args.claims} claims reviewed against the cited filing text by a second model.` : "The independent reading did not run, so no confidence score is shown." },
+    { id: "validation", label: "Independent validation", status: args.validatorRan ? "pass" : "skipped", detail: args.validatorRan ? `${args.claims} claims reviewed against the cited filing text by a separate Gemini context.` : "Generated claims were withheld because independent verification did not complete; the SEC filing digest remains available." },
   ]);
 }
 

@@ -7,7 +7,10 @@ import { getStore } from "../../../server/advisor/memory";
 import { validateQuery } from "../../../server/advisor/guardrails";
 
 function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json", "cache-control": "no-store" } });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...CORS, "content-type": "application/json", "cache-control": "no-store" },
+  });
 }
 
 async function handleMemory(request: Request): Promise<Response> {
@@ -19,12 +22,28 @@ async function handleMemory(request: Request): Promise<Response> {
   if (ticker) {
     const v = validateQuery(ticker);
     if (!v.ok) return json(400, { error: v.message });
-    const session = String(url.searchParams.get("session") ?? "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || "anon";
+    const session =
+      String(url.searchParams.get("session") ?? "")
+        .replace(/[^A-Za-z0-9_-]/g, "")
+        .slice(0, 64) || "anon";
     const turns = await store.getTurns(session, v.value.toUpperCase());
     return json(200, { ticker: v.value.toUpperCase(), turns, backend: store.kind });
   }
-  const recent = await store.recentBriefings(8);
-  return json(200, { recent, backend: store.kind, ttlMs: cfg.MEMORY_TTL_MS, aiConfigured: cfg.providers.length > 0 });
+  const recent = (await store.recentBriefings(16))
+    .filter(
+      (briefing) =>
+        !briefing.summary.researchFailed &&
+        briefing.summary.claims > 0 &&
+        briefing.summary.status &&
+        briefing.summary.status !== "unverified",
+    )
+    .slice(0, 8);
+  return json(200, {
+    recent,
+    backend: store.kind,
+    ttlMs: cfg.MEMORY_TTL_MS,
+    aiConfigured: cfg.providers.length > 0,
+  });
 }
 
 export const Route = createFileRoute("/api/public/advisor-memory")({

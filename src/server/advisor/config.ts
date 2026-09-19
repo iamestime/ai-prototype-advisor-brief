@@ -32,6 +32,8 @@ export type Cfg = {
   RATE_LIMIT_ASKS_PER_10M: number;
   DEBUG_ERRORS: boolean;
   AI_MAX_ATTEMPTS: number;
+  AI_CALL_GAP_MS: number;
+  ENABLE_EMBEDDINGS: boolean;
   providers: Provider[];
 };
 
@@ -42,6 +44,11 @@ export const EMBED_MODEL_DEFAULT = "gemini-embedding-001";
 const num = (v: string | undefined, d: number) => {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : d;
+};
+
+const nonNegativeNum = (v: string | undefined, d: number) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : d;
 };
 
 const geminiModel = (value: string | undefined, fallback: string) => {
@@ -60,32 +67,40 @@ export function readEnv(): Cfg {
     e["GOOGLE_API_KEY"],
   ].find((value) => value?.trim());
   if (geminiKey) {
-    const base = (e["GEMINI_BASE_URL"] ?? "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/$/, "");
+    const base = (
+      e["GEMINI_BASE_URL"] ?? "https://generativelanguage.googleapis.com/v1beta/openai"
+    ).replace(/\/$/, "");
     providers.push({
       name: "gemini",
       chatUrl: `${base}/chat/completions`,
       embedUrl: `${base}/embeddings`,
       key: geminiKey,
       mapChatModel: (m) => geminiModel(m, geminiModel(e["GEMINI_MODEL"], AI_MODEL_DEFAULT)),
-      mapEmbedModel: (m) => (m.startsWith("text-embedding-3") ? EMBED_MODEL_DEFAULT : m.replace(/^google\//, "")),
+      mapEmbedModel: (m) =>
+        m.startsWith("text-embedding-3") ? EMBED_MODEL_DEFAULT : m.replace(/^google\//, ""),
     });
   }
   return {
     EDGAR_UA: e["EDGAR_USER_AGENT"] ?? "AdvisorBrief public-demo https://aiqorx.com/contact",
     AI_MODEL: geminiModel(e["AI_MODEL"] ?? e["GEMINI_MODEL"], AI_MODEL_DEFAULT),
-    VALIDATOR_MODEL: geminiModel(e["VALIDATOR_MODEL"] ?? e["GEMINI_MODEL"], VALIDATOR_MODEL_DEFAULT),
+    VALIDATOR_MODEL: geminiModel(
+      e["VALIDATOR_MODEL"] ?? e["GEMINI_MODEL"],
+      VALIDATOR_MODEL_DEFAULT,
+    ),
     EMBED_MODEL: e["EMBED_MODEL"] ?? EMBED_MODEL_DEFAULT,
     VALIDATION_POLICY: e["VALIDATION_POLICY"] === "flag" ? "flag" : "exclude",
-    UNVERIFIED_POLICY: e["UNVERIFIED_POLICY"] === "hide" ? "hide" : "flag",
+    UNVERIFIED_POLICY: e["UNVERIFIED_POLICY"] === "flag" ? "flag" : "hide",
     RESEARCH_TIMEOUT_MS: num(e["RESEARCH_TIMEOUT_MS"], 120000),
-    VALIDATOR_TIMEOUT_MS: num(e["VALIDATOR_TIMEOUT_MS"], 45000),
-    ASK_TIMEOUT_MS: num(e["ASK_TIMEOUT_MS"], 40000),
+    VALIDATOR_TIMEOUT_MS: num(e["VALIDATOR_TIMEOUT_MS"], 75000),
+    ASK_TIMEOUT_MS: num(e["ASK_TIMEOUT_MS"], 60000),
     EMBED_TIMEOUT_MS: num(e["EMBED_TIMEOUT_MS"], 30000),
     MEMORY_TTL_MS: num(e["MEMORY_TTL_MS"], 6 * 3600e3),
     RATE_LIMIT_BRIEFS_PER_10M: num(e["RATE_LIMIT_BRIEFS_PER_10M"], 12),
     RATE_LIMIT_ASKS_PER_10M: num(e["RATE_LIMIT_ASKS_PER_10M"], 40),
     DEBUG_ERRORS: e["DEBUG_ERRORS"] === "1" || e["DEBUG_ERRORS"] === "true",
-    AI_MAX_ATTEMPTS: Math.min(4, num(e["AI_MAX_ATTEMPTS"], 3)),
+    AI_MAX_ATTEMPTS: Math.min(5, num(e["AI_MAX_ATTEMPTS"], 4)),
+    AI_CALL_GAP_MS: Math.min(5_000, nonNegativeNum(e["AI_CALL_GAP_MS"], 750)),
+    ENABLE_EMBEDDINGS: e["ENABLE_EMBEDDINGS"] === "1" || e["ENABLE_EMBEDDINGS"] === "true",
     providers,
   };
 }

@@ -17,8 +17,22 @@ import { chatText, logAiFailure } from "./providers";
 
 export type Verdict = "supported" | "partial" | "unsupported" | "uncited" | "unverified";
 
-export type CheckRow = { id: "source" | "citation" | "figures" | "authoritative" | "reading"; label: string; pass: boolean | null; detail: string };
-export type SourceRef = { sectionId: string; form: string; item: string; filingDate: string; accession: string; url: string; fetchedAt: string; chars: number };
+export type CheckRow = {
+  id: "source" | "citation" | "figures" | "authoritative" | "reading";
+  label: string;
+  pass: boolean | null;
+  detail: string;
+};
+export type SourceRef = {
+  sectionId: string;
+  form: string;
+  item: string;
+  filingDate: string;
+  accession: string;
+  url: string;
+  fetchedAt: string;
+  chars: number;
+};
 export type ClaimCheck = {
   index: number;
   verdict: Verdict;
@@ -38,7 +52,12 @@ export type BlockValidation = {
   status: "verified" | "flagged" | "excluded" | "unverified";
   claims: ClaimCheck[];
   counts: Record<Verdict, number>;
-  policy: { unsupported: "exclude" | "flag"; partial: "flag"; uncited: "flag"; unverified: "flag" | "hide" };
+  policy: {
+    unsupported: "exclude" | "flag";
+    partial: "flag";
+    uncited: "flag";
+    unverified: "flag" | "hide";
+  };
   elapsedMs: number;
   model: string;
   provider?: string;
@@ -56,7 +75,7 @@ Verdicts:
 
 For every claim, return a verbatim quote of at most 40 words copied exactly from the evidence that best supports (or, for unsupported, most closely relates to) the claim. Do not paraphrase the quote. If nothing in the evidence relates to the claim, return an empty quote.
 
-Output only JSON: {"claims":[{"i":<index>,"verdict":"supported|partial|unsupported","quote":"...","reason":"<one sentence>"}]}`;
+Output only JSON: {"claims":[{"id":"<block:index>","verdict":"supported|partial|unsupported","quote":"...","reason":"<one sentence>"}]}`;
 
 const VALIDATOR_RESPONSE_FORMAT = {
   type: "json_schema",
@@ -71,12 +90,12 @@ const VALIDATOR_RESPONSE_FORMAT = {
           items: {
             type: "object",
             properties: {
-              i: { type: "integer" },
+              id: { type: "string" },
               verdict: { type: "string", enum: ["supported", "partial", "unsupported"] },
               quote: { type: "string" },
               reason: { type: "string" },
             },
-            required: ["i", "verdict", "quote", "reason"],
+            required: ["id", "verdict", "quote", "reason"],
             additionalProperties: false,
           },
         },
@@ -91,7 +110,8 @@ const VALIDATOR_RESPONSE_FORMAT = {
 
 export function claimText(block: string, item: any): string {
   if (block === "summary") return String(item.text ?? "");
-  if (block === "events") return `${item.date ?? ""}: ${item.headline ?? ""}. ${item.why_it_matters ?? ""}`;
+  if (block === "events")
+    return `${item.date ?? ""}: ${item.headline ?? ""}. ${item.why_it_matters ?? ""}`;
   if (block === "risks") return `${item.title ?? ""}. ${item.text ?? ""}`;
   if (block === "questions") return `${item.question ?? ""} ${item.answer ?? ""}`;
   return String(item.text ?? "");
@@ -103,12 +123,25 @@ export function claimItems(block: string, data: any): any[] {
 
 // ---- figure check ----
 
-const UNIT_MULT: Record<string, number> = { thousand: 1e3, million: 1e6, billion: 1e9, trillion: 1e12, k: 1e3, m: 1e6, b: 1e9, bn: 1e9, mm: 1e6 };
+const UNIT_MULT: Record<string, number> = {
+  thousand: 1e3,
+  million: 1e6,
+  billion: 1e9,
+  trillion: 1e12,
+  k: 1e3,
+  m: 1e6,
+  b: 1e9,
+  bn: 1e9,
+  mm: 1e6,
+};
 
 /** Numbers stated in a claim, with the scale a reader would infer from the surrounding word. */
-export function claimFigures(text: string): Array<{ raw: string; value: number; scale: number; percent: boolean }> {
+export function claimFigures(
+  text: string,
+): Array<{ raw: string; value: number; scale: number; percent: boolean }> {
   const out: Array<{ raw: string; value: number; scale: number; percent: boolean }> = [];
-  const re = /(?<![\w.])\$?\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*(%|percent|thousand|million|billion|trillion|bn|mm|k|m|b)?(?![\w])/gi;
+  const re =
+    /(?<![\w.])\$?\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*(%|percent|thousand|million|billion|trillion|bn|mm|k|m|b)?(?![\w])/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
     const raw = m[0].trim();
@@ -146,7 +179,13 @@ export function evidenceScale(evidence: string): number[] {
   return [1, unit === "thousands" ? 1e3 : unit === "millions" ? 1e6 : 1e9];
 }
 
-export function figuresMatch(claimVal: number, claimScale: number, precisionDigits: number, ev: number[], mults: number[] = [1, 1e3, 1e6, 1e9]): boolean {
+export function figuresMatch(
+  claimVal: number,
+  claimScale: number,
+  precisionDigits: number,
+  ev: number[],
+  mults: number[] = [1, 1e3, 1e6, 1e9],
+): boolean {
   const target = claimVal * claimScale;
   const tol = Math.pow(10, -precisionDigits) * 0.51 * claimScale; // half a unit in the claim's last digit
   for (const v of ev) {
@@ -161,7 +200,10 @@ export function figuresMatch(claimVal: number, claimScale: number, precisionDigi
   return false;
 }
 
-export function checkFigures(claim: string, evidence: string): { checked: number; matched: number; unmatched: string[] } {
+export function checkFigures(
+  claim: string,
+  evidence: string,
+): { checked: number; matched: number; unmatched: string[] } {
   const figs = claimFigures(claim);
   if (!figs.length) return { checked: 0, matched: 0, unmatched: [] };
   const ev = evidenceValues(evidence);
@@ -171,7 +213,16 @@ export function checkFigures(claim: string, evidence: string): { checked: number
   for (const f of figs) {
     const decimals = (String(f.value).split(".")[1] ?? "").length;
     // a percentage or a bare number is matched as written; a scaled figure uses the table's unit when stated
-    if (figuresMatch(f.value, f.scale, decimals, ev, f.percent || f.scale === 1 ? [1, 1e3, 1e6, 1e9] : mults)) matched++;
+    if (
+      figuresMatch(
+        f.value,
+        f.scale,
+        decimals,
+        ev,
+        f.percent || f.scale === 1 ? [1, 1e3, 1e6, 1e9] : mults,
+      )
+    )
+      matched++;
     else unmatched.push(f.raw);
   }
   return { checked: figs.length, matched, unmatched };
@@ -213,9 +264,15 @@ export function quoteFound(quote: string, evidence: string): boolean {
   if (q.length < 12) return false;
   const e = norm(evidence);
   if (e.includes(q)) return true;
-  const qw = q.replace(/[^a-z0-9$%.\s]/g, " ").split(/\s+/).filter(Boolean);
+  const qw = q
+    .replace(/[^a-z0-9$%.\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
   if (qw.length < 6) return false;
-  const ew = e.replace(/[^a-z0-9$%.\s]/g, " ").split(/\s+/).filter(Boolean);
+  const ew = e
+    .replace(/[^a-z0-9$%.\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
   const win = qw.length + 3;
   const need = Math.ceil(qw.length * 0.8);
   // only start windows at a token that occurs in the quote, which keeps this fast on long sections
@@ -229,10 +286,393 @@ export function quoteFound(quote: string, evidence: string): boolean {
 
 // ---- the agent ----
 
-export function buildEvidence(sectionIds: string[], sectionsById: Map<string, Section>): { text: string; primary: Section | null } {
+export function buildEvidence(
+  sectionIds: string[],
+  sectionsById: Map<string, Section>,
+): { text: string; primary: Section | null } {
   const secs = sectionIds.map((id) => sectionsById.get(id)).filter((s): s is Section => !!s);
-  const text = secs.map((s) => `<evidence id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${s.text}\n</evidence>`).join("\n");
+  const text = secs
+    .map(
+      (s) =>
+        `<evidence id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${s.text}\n</evidence>`,
+    )
+    .join("\n");
   return { text, primary: secs[0] ?? null };
+}
+
+type PreparedClaim = {
+  id: string;
+  block: string;
+  index: number;
+  text: string;
+  cites: string[];
+  ev: ReturnType<typeof buildEvidence>;
+  figures: ReturnType<typeof checkFigures>;
+  reviewEvidence: string;
+  reviewEvidenceChars: number;
+};
+
+type ModelReview = { verdict: string; quote: string; reason: string };
+
+const REVIEW_EVIDENCE_CHARS = 2_400;
+
+/**
+ * Select the filing windows that share the most concrete language and figures with a claim. The reviewer
+ * does not need a 30,000-character filing section to check one sentence; sending a compact evidence packet
+ * reduces latency and token pressure while the server keeps the full cited text for quote and figure checks.
+ */
+export function evidenceExcerpt(
+  claim: string,
+  evidence: string,
+  maxChars = REVIEW_EVIDENCE_CHARS,
+): string {
+  if (evidence.length <= maxChars) return evidence;
+  const terms = new Set(
+    norm(claim)
+      .replace(/[^a-z0-9$%.,\s]/g, " ")
+      .split(/\s+/)
+      .filter((word) => word.length >= 4 || /\d/.test(word)),
+  );
+  const windowChars = Math.min(1_050, maxChars);
+  const step = Math.max(500, windowChars - 250);
+  const windows: Array<{ start: number; end: number; score: number }> = [];
+  for (let start = 0; start < evidence.length; start += step) {
+    const end = Math.min(evidence.length, start + windowChars);
+    const haystack = norm(evidence.slice(start, end));
+    let score = 0;
+    for (const term of terms) if (haystack.includes(term)) score += /\d/.test(term) ? 5 : 1;
+    windows.push({ start, end, score });
+    if (end === evidence.length) break;
+  }
+  const picked: typeof windows = [];
+  for (const candidate of windows.sort((a, b) => b.score - a.score || a.start - b.start)) {
+    if (
+      picked.some((row) => Math.max(row.start, candidate.start) < Math.min(row.end, candidate.end))
+    )
+      continue;
+    const used = picked.reduce((sum, row) => sum + row.end - row.start, 0);
+    if (picked.length && used + (candidate.end - candidate.start) + 5 > maxChars) break;
+    picked.push(candidate);
+    if (used + candidate.end - candidate.start >= maxChars) break;
+  }
+  if (!picked.length) return evidence.slice(0, maxChars);
+  return picked
+    .sort((a, b) => a.start - b.start)
+    .map((row) => evidence.slice(row.start, row.end).trim())
+    .join("\n[…]\n")
+    .slice(0, maxChars);
+}
+
+function prepareClaims(
+  blocks: Array<{ block: string; data: any }>,
+  sectionsById: Map<string, Section>,
+): PreparedClaim[] {
+  const prepared: PreparedClaim[] = [];
+  for (const { block, data } of blocks) {
+    for (const [index, item] of claimItems(block, data).entries()) {
+      const text = claimText(block, item);
+      const cites: string[] = Array.isArray(item.citations) ? item.citations : [];
+      const ev = buildEvidence(cites, sectionsById);
+      const figures = cites.length
+        ? checkFigures(text, ev.text)
+        : { checked: 0, matched: 0, unmatched: [] };
+      const sections = cites
+        .map((id) => sectionsById.get(id))
+        .filter((section): section is Section => !!section);
+      const perSection = Math.max(
+        700,
+        Math.floor(REVIEW_EVIDENCE_CHARS / Math.max(1, sections.length)),
+      );
+      const reviewEvidence = sections
+        .map(
+          (section) =>
+            `<evidence id="${section.id}" form="${section.form}" filed="${section.filingDate}" title="${section.title}">\n${evidenceExcerpt(text, section.text, perSection)}\n</evidence>`,
+        )
+        .join("\n");
+      prepared.push({
+        id: `${block}:${index}`,
+        block,
+        index,
+        text,
+        cites,
+        ev,
+        figures,
+        reviewEvidence,
+        reviewEvidenceChars: sections.reduce(
+          (sum, section) => sum + Math.min(section.text.length, perSection),
+          0,
+        ),
+      });
+    }
+  }
+  return prepared;
+}
+
+async function reviewClaims(
+  cfg: Cfg,
+  prepared: PreparedClaim[],
+  model: string,
+  timeoutMs: number,
+): Promise<{ reviews: Map<string, ModelReview>; provider: string; error?: string }> {
+  const toReview = prepared.filter((claim) => claim.cites.length && claim.reviewEvidence);
+  if (!toReview.length) return { reviews: new Map(), provider: "" };
+  const user = `Review every claim below. Each claim has its own filing evidence packet. Do not use evidence from one claim to validate another.\n\n${toReview
+    .map(
+      (claim) =>
+        `<review_claim id="${claim.id}" cited_sections="${claim.cites.join(",")}">\n<claim>${claim.text}</claim>\n${claim.reviewEvidence}\n</review_claim>`,
+    )
+    .join("\n\n")}\n\nReturn one JSON verdict for every review_claim id.`;
+  try {
+    const served = await chatText(
+      cfg,
+      {
+        model,
+        temperature: 0,
+        reasoning_effort: "low",
+        response_format: VALIDATOR_RESPONSE_FORMAT,
+        messages: [
+          { role: "system", content: VALIDATOR_SYSTEM },
+          { role: "user", content: user },
+        ],
+      },
+      timeoutMs,
+    );
+    const match = /\{[\s\S]*\}/.exec(served.text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+    const parsed = match ? JSON.parse(match[0]) : {};
+    const reviews = new Map<string, ModelReview>();
+    for (const row of parsed.claims ?? []) {
+      const id = String(row.id ?? "");
+      if (!toReview.some((claim) => claim.id === id)) continue;
+      reviews.set(id, {
+        verdict: String(row.verdict ?? "").toLowerCase(),
+        quote: String(row.quote ?? ""),
+        reason: String(row.reason ?? ""),
+      });
+    }
+    return { reviews, provider: served.provider };
+  } catch (error) {
+    logAiFailure("validate briefing", error);
+    const message =
+      (error as Error).name === "AbortError" ||
+      /no response within/.test(String((error as Error).message))
+        ? "the independent reading timed out"
+        : "the independent reading service did not respond";
+    return { reviews: new Map(), provider: "", error: message };
+  }
+}
+
+function finalizeBlock(
+  block: string,
+  prepared: PreparedClaim[],
+  sectionsById: Map<string, Section>,
+  reviews: Map<string, ModelReview>,
+  provider: string,
+  modelError: string | undefined,
+  model: string,
+  policyUnsupported: "exclude" | "flag",
+  policyUnverified: "flag" | "hide",
+  started: number,
+): BlockValidation {
+  const policy = {
+    unsupported: policyUnsupported,
+    partial: "flag",
+    uncited: "flag",
+    unverified: policyUnverified,
+  } as const;
+  const counts: Record<Verdict, number> = {
+    supported: 0,
+    partial: 0,
+    unsupported: 0,
+    uncited: 0,
+    unverified: 0,
+  };
+  const claims: ClaimCheck[] = [];
+  for (const p of prepared.filter((claim) => claim.block === block)) {
+    const secs = p.cites
+      .map((id) => sectionsById.get(id))
+      .filter((section): section is Section => !!section);
+    const sources: SourceRef[] = secs.map((section) => ({
+      sectionId: section.id,
+      form: section.form,
+      item: section.item,
+      filingDate: section.filingDate,
+      accession: section.accession,
+      url: section.url,
+      fetchedAt: section.fetchedAt,
+      chars: section.chars,
+    }));
+    const sourceLabel = secs
+      .map((section) => `${section.form} ${section.item} filed ${section.filingDate}`)
+      .join("; ");
+    const checks: CheckRow[] = [
+      {
+        id: "citation",
+        label: "Citation found",
+        pass: p.cites.length > 0 && secs.length === p.cites.length,
+        detail: p.cites.length
+          ? secs.length === p.cites.length
+            ? `The claim cites ${secs.length} filing section${secs.length > 1 ? "s" : ""} that ${secs.length > 1 ? "were" : "was"} actually read: ${sourceLabel}.`
+            : "The claim cites a section id that was not among the sections read."
+          : "The writer attached no citation to this claim.",
+      },
+      {
+        id: "source",
+        label: "Source content checked",
+        pass: secs.length > 0 ? true : null,
+        detail: secs.length
+          ? `${p.reviewEvidenceChars.toLocaleString()} targeted characters from the cited filing text were independently reviewed; the full ${secs.reduce((sum, section) => sum + section.chars, 0).toLocaleString()} characters remained available for deterministic quote and figure checks.`
+          : "No cited text to check against.",
+      },
+      {
+        id: "figures",
+        label: "Numbers match the filing",
+        pass: p.figures.checked ? p.figures.unmatched.length === 0 : null,
+        detail: p.figures.checked
+          ? p.figures.unmatched.length
+            ? `${p.figures.matched} of ${p.figures.checked} figures found in the cited text. Not found: ${p.figures.unmatched.join(", ")}.`
+            : `All ${p.figures.checked} figure${p.figures.checked > 1 ? "s" : ""} in the claim appear in the cited text.`
+          : "The claim states no figures to check.",
+      },
+      {
+        id: "authoritative",
+        label: "Source is authoritative",
+        pass: secs.length > 0 ? true : null,
+        detail: secs.length
+          ? `Primary document of an SEC EDGAR filing (accession ${secs[0]!.accession}), fetched from sec.gov at ${secs[0]!.fetchedAt.replace("T", " ").slice(0, 19)} UTC.`
+          : "No SEC source attached.",
+      },
+    ];
+    const base: ClaimCheck = {
+      index: p.index,
+      verdict: "unverified",
+      reason: "",
+      quote: "",
+      quoteFound: false,
+      sectionId: p.ev.primary?.id ?? null,
+      url: p.ev.primary?.url ?? null,
+      figures: p.figures,
+      modelVerdict: null,
+      checks,
+      sources,
+    };
+    if (!p.cites.length) {
+      checks.push({
+        id: "reading",
+        label: "Independent reading",
+        pass: null,
+        detail: "Not run: nothing to read against.",
+      });
+      claims.push({
+        ...base,
+        verdict: "uncited",
+        reason: "The writer cited no filing section for this claim.",
+      });
+      continue;
+    }
+    const review = reviews.get(p.id);
+    if (!review) {
+      const why = modelError
+        ? `Verification unavailable: ${modelError}.`
+        : "The reviewer returned no verdict for this claim.";
+      checks.push({
+        id: "reading",
+        label: "Independent reading",
+        pass: null,
+        detail: `${why} No confidence is shown; the original filing remains linked.`,
+      });
+      claims.push({ ...base, verdict: "unverified", reason: why });
+      continue;
+    }
+    const located = review.quote ? quoteFound(review.quote, p.ev.text) : false;
+    let verdict: Verdict;
+    let reason = review.reason;
+    if (review.verdict === "unsupported") verdict = "unsupported";
+    else if (review.verdict === "partial") verdict = "partial";
+    else if (review.verdict === "supported") {
+      if (!located) {
+        verdict = "partial";
+        reason =
+          `Validator called this supported but its evidence quote could not be located in the cited text. ${reason}`.trim();
+      } else if (p.figures.unmatched.length) {
+        verdict = "partial";
+        reason =
+          `Figure${p.figures.unmatched.length > 1 ? "s" : ""} not found in the cited text: ${p.figures.unmatched.join(", ")}. ${reason}`.trim();
+      } else verdict = "supported";
+    } else {
+      verdict = "unverified";
+      reason = `Validator returned an unknown verdict "${review.verdict}".`;
+    }
+    checks.push({
+      id: "reading",
+      label: "Independent reading",
+      pass: review.verdict === "supported" ? located : review.verdict === "partial" ? null : false,
+      detail:
+        review.verdict === "supported"
+          ? located
+            ? "A separate Gemini review found the claim in its cited evidence packet, and the returned quote was located in the full filing text."
+            : "The reviewer called this supported but its quote could not be located, so the claim is marked for review."
+          : review.verdict === "partial"
+            ? `The reviewer found the main point but identified an imprecise or missing detail: ${review.reason}`
+            : `The reviewer could not support this claim from the cited evidence: ${review.reason}`,
+    });
+    claims.push({
+      ...base,
+      verdict,
+      reason,
+      quote: review.quote,
+      quoteFound: located,
+      modelVerdict: review.verdict,
+    });
+  }
+  for (const claim of claims) counts[claim.verdict]++;
+  const status: BlockValidation["status"] =
+    counts.unverified > 0 && claims.every((claim) => claim.verdict === "unverified")
+      ? "unverified"
+      : counts.unsupported > 0 && policy.unsupported === "exclude"
+        ? "excluded"
+        : counts.partial + counts.uncited + counts.unsupported + counts.unverified > 0
+          ? "flagged"
+          : "verified";
+  return {
+    block,
+    status,
+    claims,
+    counts,
+    policy,
+    elapsedMs: Date.now() - started,
+    model,
+    provider,
+    ...(modelError ? { error: modelError } : {}),
+  };
+}
+
+/** One independent Gemini call reviews the whole briefing after the writer stream closes. */
+export async function validateBriefing(
+  cfg: Cfg,
+  blocks: Array<{ block: string; data: any }>,
+  sectionsById: Map<string, Section>,
+  model: string,
+  policyUnsupported: "exclude" | "flag",
+  policyUnverified: "flag" | "hide" = "hide",
+  timeoutMs = 45000,
+): Promise<BlockValidation[]> {
+  const started = Date.now();
+  const prepared = prepareClaims(blocks, sectionsById);
+  const reviewed = await reviewClaims(cfg, prepared, model, timeoutMs);
+  return blocks.map(({ block }) =>
+    finalizeBlock(
+      block,
+      prepared,
+      sectionsById,
+      reviewed.reviews,
+      reviewed.provider,
+      reviewed.error,
+      model,
+      policyUnsupported,
+      policyUnverified,
+      started,
+    ),
+  );
 }
 
 export async function validateBlock(
@@ -245,134 +685,81 @@ export async function validateBlock(
   policyUnverified: "flag" | "hide" = "flag",
   timeoutMs = 45000,
 ): Promise<BlockValidation> {
-  const started = Date.now();
-  const items = claimItems(block, data);
-  const policy = { unsupported: policyUnsupported, partial: "flag", uncited: "flag", unverified: policyUnverified } as const;
-  const counts: Record<Verdict, number> = { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 };
-  const claims: ClaimCheck[] = [];
-
-  // Deterministic pass first: figures and citation presence. This runs even if the model call fails.
-  const prepared = items.map((item, index) => {
-    const text = claimText(block, item);
-    const cites: string[] = Array.isArray(item.citations) ? item.citations : [];
-    const ev = buildEvidence(cites, sectionsById);
-    const figures = cites.length ? checkFigures(text, ev.text) : { checked: 0, matched: 0, unmatched: [] };
-    return { index, text, cites, ev, figures };
-  });
-
-  const finish = (): BlockValidation => {
-    for (const c of claims) counts[c.verdict]++;
-    const status: BlockValidation["status"] =
-      counts.unverified > 0 && claims.every((c) => c.verdict === "unverified") ? "unverified"
-        : counts.unsupported > 0 && policy.unsupported === "exclude" ? "excluded"
-          : counts.partial + counts.uncited + counts.unsupported + counts.unverified > 0 ? "flagged"
-            : "verified";
-    return { block, status, claims, counts, policy, elapsedMs: Date.now() - started, model, provider };
-  };
-  let provider = "";
-
-  if (!items.length) return finish();
-
-  // Model pass, scoped to the cited evidence only.
-  const toReview = prepared.filter((p) => p.cites.length && p.ev.text);
-  let modelOut = new Map<number, { verdict: string; quote: string; reason: string }>();
-  let modelError: string | undefined;
-  if (toReview.length) {
-    const evidenceBlocks = new Map<string, string>();
-    for (const p of toReview) for (const id of p.cites) { const s = sectionsById.get(id); if (s) evidenceBlocks.set(id, `<evidence id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${s.text}\n</evidence>`); }
-    const user = `EVIDENCE (the only source of truth for this review):\n${[...evidenceBlocks.values()].join("\n")}\n\nCLAIMS TO REVIEW (each lists the evidence ids its writer cited):\n${toReview
-      .map((p) => `[${p.index}] cites ${p.cites.join(", ")}\n${p.text}`)
-      .join("\n\n")}\n\nReturn the JSON object now.`;
-    try {
-      const served = await chatText(cfg, {
-        model,
-        temperature: 0,
-        reasoning_effort: "low",
-        response_format: VALIDATOR_RESPONSE_FORMAT,
-        messages: [{ role: "system", content: VALIDATOR_SYSTEM }, { role: "user", content: user }],
-      }, timeoutMs);
-      provider = served.provider;
-      const text: string = served.text;
-      const m = /\{[\s\S]*\}/.exec(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
-      const parsed = m ? JSON.parse(m[0]) : {};
-      for (const c of parsed.claims ?? []) modelOut.set(Number(c.i), { verdict: String(c.verdict ?? "").toLowerCase(), quote: String(c.quote ?? ""), reason: String(c.reason ?? "") });
-    } catch (e) {
-      // Vendor detail stays in the server log; the advisor sees a neutral reason.
-      logAiFailure(`validate ${block}`, e);
-      modelError = (e as Error).name === "AbortError" || /no response within/.test(String((e as Error).message)) ? "the independent reading timed out" : "the independent reading service did not respond";
-    }
-  }
-
-  for (const p of prepared) {
-    const secs = p.cites.map((id) => sectionsById.get(id)).filter((x): x is Section => !!x);
-    const sources: SourceRef[] = secs.map((x) => ({ sectionId: x.id, form: x.form, item: x.item, filingDate: x.filingDate, accession: x.accession, url: x.url, fetchedAt: x.fetchedAt, chars: x.chars }));
-    const srcLabel = secs.map((x) => `${x.form} ${x.item} filed ${x.filingDate}`).join("; ");
-    const checks: CheckRow[] = [
-      { id: "citation", label: "Citation found", pass: p.cites.length > 0 && secs.length === p.cites.length,
-        detail: p.cites.length ? (secs.length === p.cites.length ? `The claim cites ${secs.length} filing section${secs.length > 1 ? "s" : ""} that ${secs.length > 1 ? "were" : "was"} actually read: ${srcLabel}.` : "The claim cites a section id that was not among the sections read.") : "The writer attached no citation to this claim." },
-      { id: "source", label: "Source content checked", pass: secs.length > 0 ? true : null,
-        detail: secs.length ? `${secs.reduce((a, x) => a + x.chars, 0).toLocaleString()} characters of the cited filing text were sent to the validator as the only evidence.` : "No cited text to check against." },
-      { id: "figures", label: "Numbers match the filing", pass: p.figures.checked ? p.figures.unmatched.length === 0 : null,
-        detail: p.figures.checked ? (p.figures.unmatched.length ? `${p.figures.matched} of ${p.figures.checked} figures found in the cited text. Not found: ${p.figures.unmatched.join(", ")}.` : `All ${p.figures.checked} figure${p.figures.checked > 1 ? "s" : ""} in the claim appear in the cited text.`) : "The claim states no figures to check." },
-      { id: "authoritative", label: "Source is authoritative", pass: secs.length > 0 ? true : null,
-        detail: secs.length ? `Primary document of an SEC EDGAR filing (accession ${secs[0]!.accession}), fetched from sec.gov at ${secs[0]!.fetchedAt.replace("T", " ").slice(0, 19)} UTC.` : "No SEC source attached." },
-    ];
-    const base: ClaimCheck = {
-      index: p.index, verdict: "unverified", reason: "", quote: "", quoteFound: false,
-      sectionId: p.ev.primary?.id ?? null, url: p.ev.primary?.url ?? null, figures: p.figures, modelVerdict: null, checks, sources,
-    };
-    if (!p.cites.length) {
-      checks.push({ id: "reading", label: "Independent reading", pass: null, detail: "Not run: nothing to read against." });
-      claims.push({ ...base, verdict: "uncited", reason: "The writer cited no filing section for this claim." });
-      continue;
-    }
-    const mo = modelOut.get(p.index);
-    if (!mo) {
-      const why = modelError ? `Not validated: ${modelError}.` : "Validator returned no verdict for this claim.";
-      checks.push({ id: "reading", label: "Independent reading", pass: null, detail: `${why} No confidence is shown; the deterministic checks above still stand and the original filing is linked.` });
-      claims.push({ ...base, verdict: "unverified", reason: why });
-      continue;
-    }
-    const qf = mo.quote ? quoteFound(mo.quote, p.ev.text) : false;
-    let verdict: Verdict;
-    let reason = mo.reason;
-    if (mo.verdict === "unsupported") {
-      verdict = "unsupported";
-    } else if (mo.verdict === "partial") {
-      verdict = "partial";
-    } else if (mo.verdict === "supported") {
-      if (!qf) { verdict = "partial"; reason = `Validator called this supported but its evidence quote could not be located in the cited text. ${reason}`.trim(); }
-      else if (p.figures.unmatched.length) { verdict = "partial"; reason = `Figure${p.figures.unmatched.length > 1 ? "s" : ""} not found in the cited text: ${p.figures.unmatched.join(", ")}. ${reason}`.trim(); }
-      else verdict = "supported";
-    } else {
-      verdict = "unverified"; reason = `Validator returned an unknown verdict "${mo.verdict}".`;
-    }
-    if (verdict === "supported" && p.figures.checked && p.figures.matched < p.figures.checked) verdict = "partial";
-    checks.push({ id: "reading", label: "Independent reading", pass: mo.verdict === "supported" ? qf : mo.verdict === "partial" ? null : false,
-      detail: mo.verdict === "supported"
-        ? (qf ? `A second model read only the cited text and found the claim stated there. Evidence quote located verbatim in the filing.` : `A second model called this supported but its evidence quote could not be located in the cited text, so the claim is marked for review.`)
-        : mo.verdict === "partial" ? `A second model found the main point in the cited text but a detail is missing or imprecise: ${mo.reason}` : `A second model could not find this in the cited text: ${mo.reason}` });
-    claims.push({ ...base, verdict, reason, quote: mo.quote, quoteFound: qf, modelVerdict: mo.verdict });
-  }
-  const out = finish();
-  if (modelError) out.error = modelError;
-  return out;
+  const [result] = await validateBriefing(
+    cfg,
+    [{ block, data }],
+    sectionsById,
+    model,
+    policyUnsupported,
+    policyUnverified,
+    timeoutMs,
+  );
+  return result!;
 }
 
 export function summarizeValidation(blocks: BlockValidation[], started: number, model: string) {
-  const counts: Record<Verdict, number> = { supported: 0, partial: 0, unsupported: 0, uncited: 0, unverified: 0 };
-  let claims = 0, figuresChecked = 0, figuresMatched = 0, quotesFound = 0;
-  for (const b of blocks) for (const c of b.claims) {
-    claims++; counts[c.verdict]++;
-    figuresChecked += c.figures.checked; figuresMatched += c.figures.matched;
-    if (c.quoteFound) quotesFound++;
-  }
-  const excluded = blocks.reduce((a, b) => a + (b.policy.unsupported === "exclude" ? b.counts.unsupported : 0) + (b.policy.unverified === "hide" ? b.counts.unverified : 0), 0);
+  const counts: Record<Verdict, number> = {
+    supported: 0,
+    partial: 0,
+    unsupported: 0,
+    uncited: 0,
+    unverified: 0,
+  };
+  let claims = 0,
+    figuresChecked = 0,
+    figuresMatched = 0,
+    quotesFound = 0;
+  for (const b of blocks)
+    for (const c of b.claims) {
+      claims++;
+      counts[c.verdict]++;
+      figuresChecked += c.figures.checked;
+      figuresMatched += c.figures.matched;
+      if (c.quoteFound) quotesFound++;
+    }
+  const excluded = blocks.reduce(
+    (a, b) =>
+      a +
+      (b.policy.unsupported === "exclude" ? b.counts.unsupported : 0) +
+      (b.policy.unverified === "hide" ? b.counts.unverified : 0),
+    0,
+  );
   const validatorRan = blocks.some((b) => b.claims.some((c) => c.modelVerdict !== null));
-  const status = claims === 0 || !validatorRan ? "unverified" : counts.unsupported > 0 ? "unsupported" : counts.supported === claims ? "verified" : "review";
+  const status =
+    claims === 0 || !validatorRan
+      ? "unverified"
+      : counts.unsupported > 0
+        ? "unsupported"
+        : counts.supported === claims
+          ? "verified"
+          : "review";
   // Safe failure: if the independent reading did not run, no coverage figure is reported at all. A number here would be a false signal.
-  const supportedPct = validatorRan && claims ? Math.round((100 * counts.supported) / claims) : null;
-  const hidden = blocks.reduce((a, b) => a + (b.policy.unverified === "hide" ? b.counts.unverified : 0), 0);
+  const supportedPct =
+    validatorRan && claims ? Math.round((100 * counts.supported) / claims) : null;
+  const hidden = blocks.reduce(
+    (a, b) => a + (b.policy.unverified === "hide" ? b.counts.unverified : 0),
+    0,
+  );
   const errors = [...new Set(blocks.map((b) => b.error).filter((x): x is string => !!x))];
-  return { claims, counts, excluded, hidden, flagged: counts.partial + counts.uncited + (hidden ? 0 : counts.unverified) + (counts.unsupported - (excluded - hidden)), figuresChecked, figuresMatched, quotesFound, supportedPct, validatorRan, status, model, provider: blocks.find((b) => b.provider)?.provider ?? null, errors, elapsedMs: Date.now() - started };
+  return {
+    claims,
+    counts,
+    excluded,
+    hidden,
+    flagged:
+      counts.partial +
+      counts.uncited +
+      (hidden ? 0 : counts.unverified) +
+      (counts.unsupported - (excluded - hidden)),
+    figuresChecked,
+    figuresMatched,
+    quotesFound,
+    supportedPct,
+    validatorRan,
+    status,
+    model,
+    provider: blocks.find((b) => b.provider)?.provider ?? null,
+    errors,
+    elapsedMs: Date.now() - started,
+  };
 }

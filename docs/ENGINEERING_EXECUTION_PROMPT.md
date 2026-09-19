@@ -1,130 +1,139 @@
-# Engineering execution brief
+# Principal engineering execution prompt
 
-Use the following prompt to audit, repair, validate, and release Advisor Brief. It is intentionally written as an execution contract rather than a brainstorming request.
-
----
+Use this prompt to investigate, repair, validate, and release Advisor Brief. It is an engineering acceptance contract, not a request for cosmetic changes.
 
 ## Role
 
-Act as the principal engineer and lead Forward Deployed Engineer accountable for the production readiness of a public AI prototype used in a wealth-management demonstration. Work from evidence. Inspect the live system, source, runtime behavior, screenshots, and product deck before changing code. Do not paper over a failed AI path with UI copy.
+Act as the principal engineer and lead Forward Deployed Engineer accountable for a client-facing AI prototype. Work from observed behavior, request traces, source code, and primary documentation. Preserve the product’s strongest constraint: a statement is useful only when the system can show which filing supports it.
 
-## Inputs
+## Surfaces to inspect
 
 - Live application: <https://ai-prototype-advisor-brief.lovable.app/>
-- GitHub repository: <https://github.com/iamestime/ai-prototype-advisor-brief>
+- Source repository: <https://github.com/iamestime/ai-prototype-advisor-brief>
 - Product presentation: `docs/Advisor_Brief_Deck.pptx`
-- Failure evidence:
-  - “The narrative briefing is not configured for this environment yet.”
-  - “No narrative claims were generated, so there is nothing to validate.”
-  - “The independent reading did not run, so no confidence score is shown.”
-  - Follow-up answers must use Gemini directly, not Lovable AI or Claude.
+- Required ticker matrix: `LLY`, `BA`, `NVDA`, and `ORCL`
+- Observed failures:
+  - narrative generation intermittently falls back to the Filing Digest;
+  - the independent reader fails and every claim displays an unhelpful validation warning;
+  - bad validation results can be replayed from memory;
+  - filing-grounded follow-up answers become unavailable after briefing generation;
+  - a runtime `.env` file is tracked in a public repository.
 
-## Mission
+Make changes through source control only. Do not edit the application through Lovable or another visual frontend. Publish through a normal GitHub commit without rewriting shared history unless the repository owner explicitly authorizes a credential-remediation history rewrite.
 
-Deliver a working, reviewable system in which a new visitor sees dark mode, a briefing produces six filing-grounded narrative blocks, every claim enters independent validation, a genuine evidence-coverage score appears only when that review ran, and follow-up questions are answered by Gemini from retrieved filing passages. Preserve the deterministic SEC/XBRL digest as an honest fallback.
+## Outcome
 
-Publish the completed changes to the repository through a normal Git commit and push. Do not use a visual site editor or a Lovable prompt to modify the application. Do not rewrite published Git history.
+Deliver a dark-first prototype in which each required ticker produces six filing-grounded narrative sections, one isolated independent review covers every claim, a real evidence-coverage score appears, follow-up questions are answered directly by Gemini with filing citations, unsafe questions are refused before inference, and only independently reviewed briefings are cached.
 
-## Non-negotiable technical decisions
+If Gemini is unavailable, fail closed: remove generated claims from the client view and show the deterministic SEC/XBRL Filing Digest. Never leave a completed page covered in “Not validated” labels, and never manufacture a confidence score.
 
-1. **Gemini only.** Research, validation, embeddings, and Q&A must call Google's Gemini API directly from the server. Remove Claude, Lovable AI gateway, and unrelated provider fallbacks. Return model/provider provenance without returning credentials.
-2. **Server-only secrets.** Support both Node `process.env` and Cloudflare/Nitro runtime bindings. `GEMINI_API_KEY` must never be embedded in a client bundle, sent to the browser, logged, committed, or named with `VITE_`.
-3. **Evidence is the product.** Generated content may cite only section IDs that were actually supplied. Unknown IDs are dropped and reported. Each cited source retains form, item, filing date, accession, SEC URL, fetch time, and character count.
-4. **Independent means isolated.** The reviewer receives the claims and cited filing text only, not the writer's full context. It must return a verdict and short verbatim quote. The server, not the model, locates that quote and checks every stated figure.
-5. **No false confidence.** Show an evidence-coverage percentage only if the independent reviewer returned usable verdicts. When review fails, mark claims unverified and show no number.
-6. **Graceful failure.** SEC filings, XBRL figures, events, provenance, and links remain available when Gemini does not. Never relabel deterministic digest content as generated research.
-7. **Dark by default.** First-time visitors start in dark mode. Preserve an explicit saved light preference.
+## Engineering principles
 
-## Investigation sequence
+1. **Gemini is the only inference provider.** Narrative writing, independent review, optional embeddings, and follow-up answers call Google’s Gemini API directly from the server. Do not route through Lovable AI, Claude, Anthropic, OpenAI, or a platform model gateway.
+2. **The server is the trust boundary.** Model credentials may come from encrypted Cloudflare/Nitro runtime bindings or server process variables. A privileged key must never enter a `VITE_` variable, browser bundle, response payload, log, fixture, screenshot, or committed file.
+3. **Authority remains with the filing.** Every generated claim may cite only a section ID supplied to the writer. Each source retains form, item, filing date, accession number, SEC URL, fetch time, and source length.
+4. **Independent review means a separate context.** The reviewer receives claims and compact excerpts from their cited sections, not the writer’s prompt or uncited sections.
+5. **Deterministic checks outrank model assertions.** The server verifies citation IDs, locates the reviewer’s quote in the full filing text, and reconciles figures across filing units and ordinary rounding.
+6. **Quota is an architectural constraint.** Do not launch reviewer or embedding calls while a writer stream is open. Reduce provider calls before increasing timeouts.
+7. **Memory stores trusted outcomes, not failures.** A brief without a completed independent review is never replayable as a successful result.
 
-1. Reproduce the live failure with a clean session and record the SSE event sequence from `/api/public/advisor-brief`.
-2. Trace one request from the Cloudflare worker entry through configuration, provider selection, research streaming, validation, retrieval, Q&A, memory, and UI state.
-3. Verify whether runtime secrets arrive in the worker `env` binding or `process.env`. Treat a mismatch at this boundary as a shared systems fault, not four unrelated feature bugs.
-4. Inspect the model stream framing. Test arbitrary chunk boundaries, fenced JSON, pretty-printed JSON, partial objects, retries, empty blocks, and invalid citations.
-5. Confirm validation concurrency and embedding work cannot exhaust model quota before advisor-facing work completes.
-6. Review all public errors for credential, vendor-account, or billing leakage.
+## Investigation protocol
+
+1. Reproduce a fresh live briefing and record the Server-Sent Event sequence, block count, provider, validation result, retrieval mode, total time, and any failure code.
+2. Trace the Cloudflare worker entry, runtime binding bridge, model configuration, writer, reviewer, retrieval, Q&A, memory, and UI state.
+3. Quantify model calls per briefing. Look for concurrent requests, repeated evidence, embedding batches, retry storms, and cache replay of failed states.
+4. Distinguish a missing key from quota pressure, invalid payloads, timeouts, and parser failures. Keep provider detail in server logs; give the browser a safe failure category.
+5. Inspect the tracked tree and relevant history for runtime files, Gemini keys, Supabase service-role keys, private keys, high-entropy tokens, and personal contact information without printing credential values.
+6. Consult primary Gemini documentation for the deployed API surface, structured output, retry behavior, and embedding contracts.
 
 ## Required implementation
 
-### Runtime and provider
+### Secret hygiene
 
-- Register string runtime bindings at the custom server entry before importing or invoking route handlers.
-- Merge runtime bindings over build-time environment values.
-- Configure exactly one provider named `gemini`.
-- Accept documented Gemini key aliases only where necessary for deployment portability.
-- Add bounded retries for network errors, `429`, and `5xx`; honor `Retry-After`; do not retry invalid requests or authentication failures.
-- Keep timeouts and maximum attempts configurable and bounded.
+- Remove `.env` and every live runtime-configuration file from the tracked tree.
+- Ignore `.env`, `.env.*`, private keys, and certificate bundles while retaining a value-free `.env.example`.
+- Add an automated tracked-tree secret check and execute it in the normal test gate.
+- Document the rule that deletion does not revoke a leaked key. If a privileged credential is discovered, stop using it, rotate it at the provider, remove it from the branch, and prepare a coordinated history purge rather than silently force-pushing.
+- Confirm that the final repository contains no personal email address. Use only Estimé Aristomene, Jr., Managing Director, Principal Engineer at AiQorx, and <https://aiqorx.com/contact>.
 
-### Narrative research
+### Runtime and transport
 
-- Produce these blocks in order: `summary`, `what_changed`, `risks`, `events`, `talking_points`, `questions`.
-- Parse complete JSON objects by brace depth while respecting quoted strings and escapes. Do not depend on model newlines or transport chunks.
-- Reject empty narrative blocks except a legitimately empty recent-events array.
-- Regenerate missing blocks individually with structured JSON output.
-- If zero usable claims survive, emit an explicit `empty_narrative` failure and do not cache the response as a completed briefing.
+- Capture Cloudflare/Nitro string bindings before route handlers read configuration.
+- Resolve only the documented Gemini key aliases and normalize model IDs to Gemini models.
+- Retry network errors, `429`, and `5xx` with bounded exponential backoff and `Retry-After` support. Do not retry authentication or invalid-request failures.
+- Keep keys out of client-visible diagnostics. Return provider and model provenance only after a successful model result.
 
-### Validation
+### Narrative writer
 
-- Start review as blocks arrive, with a small concurrency limit.
-- Check citation existence and authority deterministically.
-- Reconcile financial figures across filing unit conventions and normal rounding.
-- Require the reviewer's evidence quote to occur in the cited text.
-- Hold unsupported claims under the default policy; flag partial and uncited claims.
-- Aggregate claims, verdicts, figures, located quotes, held claims, errors, elapsed time, model, and provider.
+- Stream `summary`, `what_changed`, `risks`, `events`, `talking_points`, and `questions` in that order.
+- Parse top-level JSON objects by brace depth while respecting strings and escapes. Do not rely on newlines or provider chunk boundaries.
+- Reject empty required sections and unknown citation IDs.
+- Recover missing blocks sequentially. Never launch a fan-out of regeneration calls against the same key.
+- Treat zero claims or an incomplete required block set as a failed narrative and do not cache it.
 
-### Follow-up answers
+### Independent validation
 
-- Build or reuse a filing index keyed to the same accessions as the briefing.
-- Combine lexical BM25 and Gemini embeddings; degrade to lexical retrieval if embeddings fail.
-- Give Gemini only the selected passages and recent bounded conversation turns.
-- Recheck answer citations, figures, quote, and compliance language on the server.
-- Display `Gemini · <model>` with successful model-generated answers.
-- Refuse sensitive client identifiers and recommendation/forecast questions before inference.
+- Wait for the writer stream to close before starting the reviewer.
+- Build one compact review request for the entire briefing. For each claim, select the most relevant windows from only its cited filing sections and preserve the full cited text server-side.
+- Require one verdict and one short verbatim evidence quote per claim.
+- Validate the quote against the full filing text, reconcile every figure, and hold unsupported claims.
+- Report evidence coverage only when at least one usable independent verdict returns. If the reviewer fails completely, switch the interface to digest-only mode and withhold generated claims.
+- Never cache or list an entirely unverified briefing in recent memory.
 
-### Memory
+### Retrieval and “Answers cite the filing”
 
-- Cache completed briefings by ticker plus sorted accessions, with a configurable TTL.
-- Keep the last 12 conversation turns per browser session and ticker.
-- Provide an in-process default and an optional Supabase backend.
-- For Supabase, ship an idempotent migration, enable RLS, create no browser-access policy, and use the service role only on the server.
+- Build BM25 retrieval from the same accession-keyed filing corpus used for the brief.
+- Make Gemini embeddings optional and quota-aware; lexical retrieval must remain a complete, deterministic fallback.
+- Send Gemini only the selected passages and a bounded six-turn conversation window.
+- Require structured output containing answer, passage citations, a verbatim quote, and answerability.
+- Recheck citations, figures, quote location, and compliance language on the server before displaying the answer.
+- Show `Gemini · <model>` only on a successful Gemini answer. Do not configure or retain a Lovable AI or Claude route.
+- Refuse client identifiers, trade recommendations, price targets, guarantees, and return forecasts before a model call.
 
-### Interface and documentation
+### Client experience
 
-- Preserve the existing information-dense advisor UI and make dark mode the first-run default.
-- Rewrite the README as an engineering case study: product thesis, architecture, orchestration, frontend, backend, model stack, data, memory, retrieval, guardrails, failure modes, setup, variables, tests, deployment, public-demo boundary, presentation, and project lead.
-- Use accurate Mermaid diagrams rather than decorative architecture claims.
-- Identify the project lead only as Estimé Aristomene, Jr., Managing Director, Principal Engineer at AiQorx, and link to <https://aiqorx.com/contact>.
-- Do not publish a personal email address.
+- Keep dark mode as the first-visit default and preserve an explicit light preference.
+- Stream authoritative market and filing data immediately.
+- Use calm operational language. Do not expose quota, billing, credentials, raw provider errors, or a wall of “Not validated” labels.
+- On a reviewer outage, show the Filing Digest and state that generated claims were withheld pending verification.
+- Keep filing links, accessions, fetch times, validation details, model provenance, retrieval mode, memory state, and guardrail outcomes inspectable.
 
-## Acceptance tests
+### README
 
-All of the following must pass before release:
+Rewrite the README as a serious engineering case study suitable for a Forward Deployed Engineer review. Include:
 
-1. `npm test`
-2. `npm run test:smoke`
+- product thesis and advisor workflow;
+- live application, product deck, and execution brief;
+- full architecture and request sequence diagrams;
+- role-separated orchestration and trust model;
+- frontend, backend, runtime, model, SEC/XBRL, market-data, retrieval, and memory stack;
+- secret boundary, validation controls, guardrails, graceful degradation, and cache policy;
+- local setup, environment contract, APIs, repository map, tests, deployment checks, and productionization boundary;
+- an explicit statement that this is a public demonstration exercise, not investment advice or a production compliance system;
+- project attribution only to Estimé Aristomene, Jr., Managing Director, Principal Engineer at AiQorx, with <https://aiqorx.com/contact>.
+
+Write like an experienced engineer explaining a real system. Prefer concrete decisions, operating limits, and failure semantics over adjectives.
+
+## Release gates
+
+The release is not complete until all of these pass:
+
+1. `npm run security:secrets`
+2. `npm test`
 3. `npm run typecheck`
 4. `npm run build`
-5. A mocked Gemini stream receives two `429` responses, retries, then delivers all six blocks.
-6. Pretty-printed, fenced, adjacent, and split JSON objects parse correctly.
-7. A runtime-binding key configures Gemini even when it is absent from `process.env`.
-8. An OpenAI or Anthropic key alone cannot configure a provider.
-9. A briefing with zero usable claims is not recorded as successful.
-10. Live smoke test: a clean first visit is dark.
-11. Live smoke test: a fresh ticker emits six narrative blocks, a completed validation summary, `validatorRan: true`, and a non-null supported percentage.
-12. Live smoke test: a factual follow-up returns Gemini provenance and at least one valid filing source.
-13. Live smoke test: “Should I buy this stock?” is refused without a model call.
+5. `npm run test:smoke`
+6. No `.env`, privileged credential, private key, or personal email exists in the tracked tree.
+7. A retry test survives two `429` responses and still delivers all six writer blocks.
+8. A batching test proves multiple briefing blocks use one independent-review request.
+9. A failed reviewer causes digest-only output and is not cached.
+10. In a clean browser, dark mode is active before React hydration.
+11. Fresh live runs for `LLY`, `BA`, `NVDA`, and `ORCL` each produce six blocks, `validatorRan: true`, Gemini provenance, and a numeric evidence-coverage score.
+12. A factual follow-up returns Gemini provenance and at least one valid SEC filing source.
+13. “Should I buy this stock?” is refused without model provenance because inference never ran.
 
-If a production secret is missing, complete and publish every code-level repair, prove the model path against a local Gemini-compatible test double, and report the exact remaining runtime binding as a release blocker. Never fabricate a successful live result.
+Use `npm run test:live` for the four-ticker production matrix after the GitHub-connected deployment has picked up the release commit.
 
 ## Release report
 
-Return a concise report containing:
-
-- root cause and why it affected narrative, validation, embeddings, and Q&A together;
-- implementation summary;
-- commit SHA and repository link;
-- test commands and results;
-- live acceptance results, with any blocked check stated plainly;
-- any remaining productionization work that is outside the public-demo scope.
-
----
+Return a concise report with the root cause, security findings, changed architecture, commit SHA, automated results, four-ticker live results, factual Q&A result, recommendation-refusal result, and any deployment propagation still pending. Do not claim the public application passed until the deployed asset and API behavior match the release commit.
