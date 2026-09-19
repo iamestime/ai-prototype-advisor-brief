@@ -82,7 +82,7 @@ sequenceDiagram
         Trust-->>Advisor: Reviewed narrative + evidence coverage
         API->>Memory: Cache reviewed result by accessions
     else Review unavailable
-        Trust-->>Advisor: Withhold narrative; show SEC digest
+        Trust-->>Advisor: Withhold narrative and show SEC digest
     end
 ```
 
