@@ -2,7 +2,7 @@
 
 ### One minute, one page, every claim traceable to a filing.
 
-[Live application](https://ai-prototype-advisor-brief.lovable.app/) · [Figma design](https://www.figma.com/design/fD6W8sS8wV8ULVIsClo4sw/Advisor-Brief---AI-Prototype?node-id=0-1) · [Product deck](docs/Advisor_Brief_Deck.pptx) · [Security policy](SECURITY.md)
+[Live application](https://ai-prototype-advisor-brief.lovable.app/) · [Figma design](https://www.figma.com/design/fD6W8sS8wV8ULVIsClo4sw/Advisor-Brief---AI-Prototype?node-id=0-1) · [Product deck](docs/Advisor_Brief__Deck.pptx) · [Security policy](SECURITY.md)
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)
@@ -398,7 +398,7 @@ scripts/check-secrets.mjs                    Tracked-tree credential gate
 scripts/live-acceptance.mjs                  Four-ticker production acceptance matrix
 supabase/migrations/                         Optional durable-memory schema
 tests/                                       Focused regression suite
-docs/Advisor_Brief_Deck.pptx                 Product and pilot presentation
+docs/Advisor_Brief__Deck.pptx                Product and pilot presentation
 ```
 
 ## Deployment contract
@@ -420,7 +420,7 @@ The current repository should not be represented as satisfying those controls.
 
 ## Presentation
 
-The eight-slide [Advisor Brief product deck](docs/Advisor_Brief_Deck.pptx) covers the advisor problem, one-minute workflow, evidence model, follow-up memory, guardrails, operating impact, and proposed four-week pilot.
+The eight-slide [Advisor Brief product deck](docs/Advisor_Brief__Deck.pptx) covers the advisor problem, one-minute workflow, evidence model, follow-up memory, guardrails, operating impact, and proposed four-week pilot.
 
 ## Project lead
 
