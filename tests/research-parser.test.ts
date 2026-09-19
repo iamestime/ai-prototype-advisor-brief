@@ -2,12 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildContext,
   blockHasContent,
   blockResponseFormat,
   extractJsonObjects,
   tryParseBlock,
   validateCitations,
 } from "../src/server/advisor/research.ts";
+
+test("bounds filing sections before sending them to the writer", () => {
+  const text = `opening evidence ${"x".repeat(30_000)} closing evidence`;
+  const context = buildContext(
+    [
+      {
+        id: "10-Q|2026-01-01|Item 2",
+        form: "10-Q",
+        filingDate: "2026-01-01",
+        item: "Item 2",
+        title: "MD&A",
+        text,
+      } as any,
+    ],
+    { name: "Example Corp", ticker: "EX", fiscalYearEnd: "1231" } as any,
+  );
+  assert.ok(context.length < 13_000);
+  assert.match(context, /opening evidence/);
+  assert.match(context, /closing evidence/);
+  assert.match(context, /middle omitted for model-call budget/);
+});
 
 test("extracts pretty-printed and adjacent model JSON without relying on newlines", () => {
   const text = `Here is the result:\n\`\`\`json\n{

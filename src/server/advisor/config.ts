@@ -19,6 +19,7 @@ export type Provider = {
 export type Cfg = {
   EDGAR_UA: string;
   AI_MODEL: string;
+  AI_FALLBACK_MODELS: string[];
   VALIDATOR_MODEL: string;
   EMBED_MODEL: string;
   VALIDATION_POLICY: "exclude" | "flag";
@@ -83,6 +84,10 @@ export function readEnv(): Cfg {
   return {
     EDGAR_UA: e["EDGAR_USER_AGENT"] ?? "AdvisorBrief public-demo https://aiqorx.com/contact",
     AI_MODEL: geminiModel(e["AI_MODEL"] ?? e["GEMINI_MODEL"], AI_MODEL_DEFAULT),
+    AI_FALLBACK_MODELS: (e["AI_FALLBACK_MODELS"] ?? "gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite")
+      .split(",")
+      .map((model) => geminiModel(model.trim(), AI_MODEL_DEFAULT))
+      .filter(Boolean),
     VALIDATOR_MODEL: geminiModel(
       e["VALIDATOR_MODEL"] ?? e["GEMINI_MODEL"],
       VALIDATOR_MODEL_DEFAULT,

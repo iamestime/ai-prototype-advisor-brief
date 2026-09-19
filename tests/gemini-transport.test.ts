@@ -8,6 +8,7 @@ import { clearRuntimeEnvForTests, setRuntimeEnv } from "../src/server/runtime-en
 
 test("Gemini transport retries throttling and delivers all six streamed blocks", async (t) => {
   let requests = 0;
+  const models: string[] = [];
   const objects = [
     { block: "summary", paragraphs: [{ text: "The company sells filing-backed products.", citations: ["s1"] }] },
     { block: "what_changed", items: [{ text: "Revenue changed during the period.", citations: ["s1"] }] },
@@ -18,9 +19,11 @@ test("Gemini transport retries throttling and delivers all six streamed blocks",
   ];
   const modelText = `\`\`\`json\n${objects.map((o) => JSON.stringify(o, null, 2)).join("\n,\n")}\n\`\`\``;
 
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     requests++;
-    req.resume();
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    models.push(JSON.parse(Buffer.concat(chunks).toString("utf8")).model);
     if (requests < 3) {
       res.writeHead(429, { "content-type": "application/json", "retry-after": "0" });
       res.end(JSON.stringify({ error: { message: "try again" } }));
@@ -66,6 +69,7 @@ test("Gemini transport retries throttling and delivers all six streamed blocks",
   );
 
   assert.equal(requests, 3);
+  assert.deepEqual(models, ["gemini-test", "gemini-test", "gemini-3.8-flash"]);
   assert.deepEqual([...result], BLOCK_ORDER);
   assert.equal(delivered.size, 6);
   assert.equal(usage.provider, "gemini");

@@ -117,7 +117,17 @@ export function blockResponseFormat(name: string) {
 
 export function buildContext(sections: Section[], company: Company): string {
   const parts = [`<company name="${company.name}" ticker="${company.ticker}" fiscalYearEnd="${company["fiscalYearEnd"] ?? ""}" />`, "<sections>"];
-  for (const s of sections) parts.push(`<section id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${sanitizeSource(s.text)}\n</section>`);
+  for (const s of sections) {
+    const clean = sanitizeSource(s.text);
+    // Bound the writer request for low-throughput quotas while retaining opening context and
+    // end-of-section tables or management conclusions.
+    const budget = s.form === "8-K" ? 6_000 : 12_000;
+    const excerpt =
+      clean.length <= budget
+        ? clean
+        : `${clean.slice(0, Math.ceil(budget * 0.7))}\n[...middle omitted for model-call budget...]\n${clean.slice(-Math.floor(budget * 0.3))}`;
+    parts.push(`<section id="${s.id}" form="${s.form}" filed="${s.filingDate}" title="${s.title}">\n${excerpt}\n</section>`);
+  }
   parts.push("</sections>");
   return parts.join("\n");
 }

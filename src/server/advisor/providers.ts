@@ -19,6 +19,7 @@ export class AiUnavailable extends Error {
 
 export type ServedResponse = Response & {
   provider: Provider["name"];
+  model: string;
   timer: ReturnType<typeof setTimeout>;
 };
 
@@ -51,6 +52,7 @@ export function logAiFailure(where: string, e: unknown) {
 async function tryProviders<T>(
   cfg: Cfg,
   timeoutMs: number,
+  maxAttempts: number,
   attempt: (
     p: Provider,
     signal: AbortSignal,
@@ -60,7 +62,7 @@ async function tryProviders<T>(
 ): Promise<{ value: T; provider: Provider["name"]; timer: ReturnType<typeof setTimeout> }> {
   const attempts: string[] = [];
   for (const p of cfg.providers) {
-    for (let n = 1; n <= cfg.AI_MAX_ATTEMPTS; n++) {
+    for (let n = 1; n <= maxAttempts; n++) {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), timeoutMs);
       try {
@@ -77,7 +79,7 @@ async function tryProviders<T>(
               : `${r.status} ${r.text.slice(0, 200)}`;
         attempts.push(`${p.name} attempt ${n}: ${label}`);
 
-        if (!retryable || n === cfg.AI_MAX_ATTEMPTS) break;
+        if (!retryable || n === maxAttempts) break;
         await delay(retryDelayMs(n, r.retryAfterMs));
       } catch (e) {
         clearTimeout(timer);
@@ -89,7 +91,7 @@ async function tryProviders<T>(
               : String(err.message ?? e)
           }`,
         );
-        if (n === cfg.AI_MAX_ATTEMPTS || err.name === "AbortError") break;
+        if (n === maxAttempts || err.name === "AbortError") break;
         await delay(retryDelayMs(n));
       }
     }
@@ -122,26 +124,46 @@ export async function chat(
   body: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<ServedResponse> {
-  const out = await tryProviders<Response>(cfg, timeoutMs, async (p, signal) => {
-    const r = await fetch(p.chatUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${p.key}` },
-      body: JSON.stringify({ ...body, model: p.mapChatModel(String(body["model"])) }),
-      signal,
-    });
-    if (r.ok) return { ok: true, value: r };
-    const retryAfterMs = retryAfter(r);
-    return {
-      ok: false,
-      status: r.status,
-      text: await r.text().catch(() => ""),
-      ...(retryAfterMs == null ? {} : { retryAfterMs }),
-    };
-  });
-  const r = out.value as ServedResponse;
-  r.provider = out.provider;
-  r.timer = out.timer;
-  return r;
+  const requested = String(body["model"] ?? cfg.AI_MODEL);
+  const candidates = [...new Set([requested, ...cfg.AI_FALLBACK_MODELS])];
+  const failures: string[] = [];
+  for (const model of candidates) {
+    try {
+      const out = await tryProviders<Response>(
+        cfg,
+        timeoutMs,
+        candidates.length > 1 ? Math.min(2, cfg.AI_MAX_ATTEMPTS) : cfg.AI_MAX_ATTEMPTS,
+        async (p, signal) => {
+          const r = await fetch(p.chatUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${p.key}` },
+            body: JSON.stringify({ ...body, model: p.mapChatModel(model) }),
+            signal,
+          });
+          if (r.ok) return { ok: true, value: r };
+          const retryAfterMs = retryAfter(r);
+          return {
+            ok: false,
+            status: r.status,
+            text: await r.text().catch(() => ""),
+            ...(retryAfterMs == null ? {} : { retryAfterMs }),
+          };
+        },
+      );
+      const r = out.value as ServedResponse;
+      r.provider = out.provider;
+      r.model = model;
+      r.timer = out.timer;
+      return r;
+    } catch (error) {
+      failures.push(
+        ...((error as AiUnavailable).attempts ?? [String(error)]).map(
+          (attempt) => `${model}: ${attempt}`,
+        ),
+      );
+    }
+  }
+  throw new AiUnavailable(failures);
 }
 
 /** Non streaming chat that returns the assistant text. */
@@ -149,7 +171,7 @@ export async function chatText(
   cfg: Cfg,
   body: Record<string, unknown>,
   timeoutMs: number,
-): Promise<{ text: string; usage: any; provider: Provider["name"] }> {
+): Promise<{ text: string; usage: any; provider: Provider["name"]; model: string }> {
   const r = await chat(cfg, body, timeoutMs);
   try {
     const resp = await r.json();
@@ -157,6 +179,7 @@ export async function chatText(
       text: resp.choices?.[0]?.message?.content ?? "",
       usage: resp.usage,
       provider: r.provider,
+      model: r.model,
     };
   } finally {
     clearTimeout(r.timer);
@@ -174,6 +197,7 @@ export async function embed(
     const out = await tryProviders<{ vectors: number[][]; model: string }>(
       cfg,
       timeoutMs,
+      cfg.AI_MAX_ATTEMPTS,
       async (p, signal) => {
         const model = p.mapEmbedModel(cfg.EMBED_MODEL);
         const r = await fetch(p.embedUrl, {
