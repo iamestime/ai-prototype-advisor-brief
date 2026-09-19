@@ -16,14 +16,14 @@ The differentiator is not the summary. It is the evidence path. Every generated 
 
 > **Public demonstration exercise.** This repository demonstrates product judgment, client discovery translated into software, grounded AI orchestration, failure-aware engineering, and clear operating controls. It is not investment advice, a research recommendation, or a production compliance system.
 
-## Evaluation guide
+## Engineering coverage
 
-This project was built to make engineering judgment inspectable. The table below maps common Forward Deployed Engineering evaluation areas to concrete implementation evidence.
+This project was built to make its engineering decisions inspectable. The table below connects each major capability to its implementation and visible product behavior.
 
-| Evaluation area | Implementation | Evidence in the product |
+| Capability | Implementation | Evidence in the product |
 | --- | --- | --- |
 | Cloud deployment | TanStack Start and Nitro compiled to a Cloudflare module runtime, with GitHub as source of truth | Public HTTPS deployment, edge server routes, runtime-bound secrets, SSE streaming |
-| LLM evaluation | Independent Gemini review plus deterministic citation, quote, and figure checks | Claim verdicts, evidence coverage, located quotes, unmatched figures, held claims |
+| LLM verification | Independent Gemini review plus deterministic citation, quote, and figure checks | Claim verdicts, evidence coverage, located quotes, unmatched figures, held claims |
 | Embedding model | Direct Gemini embedding model, enabled explicitly | Semantic vectors, model provenance, cosine score beside lexical score |
 | Vector retrieval | Passage vectors held in an accession-keyed retrieval index; BM25 remains a complete fallback | Hybrid ranking diagnostics and deterministic lexical continuity |
 | Framework | React 19, TanStack Start/Router/Query, TypeScript, Vite, Nitro | Full-stack typed routes, SSR-capable shell, streamed server events |
@@ -163,11 +163,11 @@ For each claim, the review path records:
 
 Unsupported claims are held by default. Partial and uncited claims remain visibly marked for review. Internal section protocols are stripped at the server boundary and again in the UI, so strings such as XML section tags cannot leak into advisor-facing prose. When Gemini generation or review fails completely, unverified model text is replaced by the source-derived continuity path.
 
-## LLM evaluation
+## LLM verification and quality controls
 
-The review model does not grade the writer from memory or general knowledge. It receives each claim with a compact packet containing only the filing sections cited by that claim. The application then checks the reviewer rather than trusting it automatically.
+The review model does not rely on memory or general knowledge when checking the writer. It receives each claim with a compact packet containing only the filing sections cited by that claim. The application then verifies the reviewer’s output rather than trusting it automatically.
 
-| Evaluation | Mechanism | Failure treatment |
+| Control | Mechanism | Failure treatment |
 | --- | --- | --- |
 | Citation integrity | Returned section IDs must exist in the request allow-list | Unknown IDs are removed and counted |
 | Entailment | Independent Gemini context returns supported, partial, or unsupported | Partial claims remain marked; unsupported claims are held |
