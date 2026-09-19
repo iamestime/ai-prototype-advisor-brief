@@ -45,13 +45,14 @@ const num = (v: string | undefined, d: number) => {
 export function readEnv(): Cfg {
   const e = (typeof process !== "undefined" ? process.env : {}) as Record<string, string | undefined>;
   const providers: Provider[] = [];
-  if (e["GEMINI_API_KEY"]) {
+  // GOOGLE_API_KEY is accepted as an alias for GEMINI_API_KEY.
+  if (e["GEMINI_API_KEY"] ?? e["GOOGLE_API_KEY"]) {
     const base = (e["GEMINI_BASE_URL"] ?? "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/$/, "");
     providers.push({
       name: "gemini",
       chatUrl: `${base}/chat/completions`,
       embedUrl: `${base}/embeddings`,
-      key: e["GEMINI_API_KEY"],
+      key: e["GEMINI_API_KEY"] ?? e["GOOGLE_API_KEY"]!,
       mapChatModel: (m) => m.replace(/^google\//, "").replace(/^openai\/.*/, e["GEMINI_MODEL"] ?? AI_MODEL_DEFAULT),
       mapEmbedModel: (m) => (m.startsWith("text-embedding-3") ? EMBED_MODEL_DEFAULT : m.replace(/^google\//, "")),
     });
