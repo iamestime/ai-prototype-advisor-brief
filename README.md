@@ -2,7 +2,7 @@
 
 ### One minute, one page, every claim traceable to a filing.
 
-[Live application](https://ai-prototype-advisor-brief.lovable.app/) · [Figma design](https://www.figma.com/design/fD6W8sS8wV8ULVIsClo4sw/Advisor-Brief---AI-Prototype?node-id=0-1) · [Product deck](docs/Advisor_Brief_Deck.pptx) · [Engineering execution brief](docs/ENGINEERING_EXECUTION_PROMPT.md) · [Security policy](SECURITY.md)
+[Live application](https://ai-prototype-advisor-brief.lovable.app/) · [Figma design](https://www.figma.com/design/fD6W8sS8wV8ULVIsClo4sw/Advisor-Brief---AI-Prototype?node-id=0-1) · [Product deck](docs/Advisor_Brief_Deck.pptx) · [Security policy](SECURITY.md)
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)
