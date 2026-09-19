@@ -119,6 +119,7 @@ type ValidationSummary = {
   provider?: string | null;
   errors?: string[];
   elapsedMs: number;
+  sourceDerived?: boolean;
 };
 type Digest = {
   generatedAt: string;
@@ -1498,7 +1499,9 @@ function ValidationCard({
     );
   const c = summary.counts;
   const headline =
-    summary.status === "verified"
+    summary.sourceDerived
+      ? "Source verified"
+      : summary.status === "verified"
       ? "Verified"
       : summary.status === "unsupported"
         ? "Unsupported claims held"
@@ -1561,7 +1564,7 @@ function ValidationCard({
       )}
       <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 font-mono text-[11px]">
         <div>
-          <div className="text-ink-3">Validator</div>
+          <div className="text-ink-3">{summary.sourceDerived ? "Method" : "Validator"}</div>
           <div className="text-ink">{String(summary.model).split("/").pop()}</div>
         </div>
         <div>
