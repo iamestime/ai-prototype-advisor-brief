@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="458" viewBox="0 0 1120 458" role="img" aria-labelledby="title description">
+<title id="title">Advisor Brief</title><desc id="description">Company research with an evidence trail. A public software engineering and product design exercise by Estimé Aristomene, Jr.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#73889C" stroke-width="1.5"/></marker></defs>
+<rect x="1" y="1" width="1118" height="456" rx="20" fill="#FFFFFF" stroke="#D6E1E7"/>
+<g font-family="DejaVu Sans, Arial, sans-serif">
+<rect x="24" y="24" width="1072" height="410" rx="14" fill="#F7FAFC" stroke="#F7FAFC"/>
+<text x="54" y="71" font-size="15" fill="#086C64" font-weight="700">AIQORX  /  PUBLIC ENGINEERING EXERCISE</text>
+<text x="52" y="145" font-size="57" fill="#172B45" font-weight="700">Advisor Brief</text>
+<text x="55" y="194" font-size="30" fill="#172B45" font-weight="400">Company research</text>
+<text x="55" y="235" font-size="30" fill="#172B45" font-weight="400">with an evidence trail.</text>
+<text x="55" y="285" font-size="20" fill="#52657A" font-weight="400">Public filings. Structured research.</text>
+<text x="55" y="316" font-size="20" fill="#52657A" font-weight="400">Claims you can inspect.</text>
+<text x="55" y="386" font-size="17" fill="#52657A" font-weight="400">Estimé Aristomene, Jr.  ·  Principal Engineer</text>
+<rect x="704" y="65" width="342" height="330" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="730" y="107" font-size="13" fill="#086C64" font-weight="700">FROM SOURCE TO STATEMENT</text>
+<rect x="726" y="127" width="298" height="72" rx="8" fill="#EFF3FC" stroke="#EFF3FC"/>
+<text x="743" y="155" font-size="21" fill="#172B45" font-weight="700">01  Source</text>
+<text x="743" y="180" font-size="16" fill="#52657A" font-weight="400">Filing · section · accession</text>
+<path d="M875 199 V212" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="726" y="214" width="298" height="72" rx="8" fill="#F5F7FA" stroke="#F5F7FA"/>
+<text x="743" y="242" font-size="21" fill="#172B45" font-weight="700">02  Claim</text>
+<text x="743" y="267" font-size="16" fill="#52657A" font-weight="400">Structured, cited narrative</text>
+<path d="M875 286 V299" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="726" y="301" width="298" height="72" rx="8" fill="#EAF6F2" stroke="#EAF6F2"/>
+<text x="743" y="329" font-size="21" fill="#172B45" font-weight="700">03  Check</text>
+<text x="743" y="354" font-size="16" fill="#52657A" font-weight="400">Review · quote · figures</text>
+</g></svg>

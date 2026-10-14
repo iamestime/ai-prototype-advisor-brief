@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1090" viewBox="0 0 1120 1090" role="img" aria-labelledby="title description">
+<title id="title">System architecture</title><desc id="description">Browser presentation is separated from server orchestration, source adapters, model transport, and optional persistence.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#73889C" stroke-width="1.5"/></marker></defs>
+<rect x="1" y="1" width="1118" height="1088" rx="20" fill="#FFFFFF" stroke="#D6E1E7"/>
+<g font-family="DejaVu Sans, Arial, sans-serif">
+<text x="48" y="45" font-size="14" fill="#086C64" font-weight="700">ADVISOR BRIEF  /  01</text>
+<text x="48" y="86" font-size="31" fill="#172B45" font-weight="700">A research workflow with clear boundaries</text>
+<text x="48" y="116" font-size="17" fill="#52657A" font-weight="400">Presentation in the browser. Evidence, inference, and privileged access on the server.</text>
+<rect x="48" y="151" width="1024" height="108" rx="12" fill="#EFF3FC" stroke="#D6E1E7"/>
+<text x="71" y="188" font-size="22" fill="#172B45" font-weight="700">Advisor workspace</text>
+<text x="71" y="221" font-size="19" fill="#52657A" font-weight="400">React · company search · financials · progressive blocks · evidence inspection · Q&amp;A</text>
+<path d="M560 259 V302" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="579" y="287" font-size="16" fill="#52657A" font-weight="400">SSE and JSON</text>
+<rect x="48" y="303" width="1024" height="452" rx="12" fill="#F8FAFC" stroke="#D6E1E7"/>
+<text x="72" y="341" font-size="14" fill="#086C64" font-weight="700">SERVER BOUNDARY</text>
+<rect x="72" y="365" width="976" height="92" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="95" y="402" font-size="22" fill="#172B45" font-weight="700">TanStack Start routes · /api/public</text>
+<text x="95" y="435" font-size="19" fill="#52657A" font-weight="400">/advisor-brief     /advisor-ask     /advisor-memory</text>
+<path d="M228 457 V498" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M560 457 V498" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M892 457 V498" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="72" y="499" width="312" height="201" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="95" y="536" font-size="22" fill="#172B45" font-weight="700">Evidence</text>
+<text x="95" y="569" font-size="19" fill="#52657A" font-weight="400">Resolve the company</text>
+<text x="95" y="598" font-size="19" fill="#52657A" font-weight="400">Load and parse filings</text>
+<text x="95" y="627" font-size="19" fill="#52657A" font-weight="400">Derive financial periods</text>
+<text x="95" y="656" font-size="19" fill="#52657A" font-weight="400">Preserve source metadata</text>
+<rect x="404" y="499" width="312" height="201" rx="12" fill="#EAF6F2" stroke="#D6E1E7"/>
+<text x="427" y="536" font-size="22" fill="#172B45" font-weight="700">Generation &amp; review</text>
+<text x="427" y="569" font-size="19" fill="#52657A" font-weight="400">Write structured blocks</text>
+<text x="427" y="598" font-size="19" fill="#52657A" font-weight="400">Review cited claims</text>
+<text x="427" y="627" font-size="19" fill="#52657A" font-weight="400">Check quotes and figures</text>
+<text x="427" y="656" font-size="19" fill="#52657A" font-weight="400">Construct fallback output</text>
+<rect x="736" y="499" width="312" height="201" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="759" y="536" font-size="22" fill="#172B45" font-weight="700">Retrieval &amp; memory</text>
+<text x="759" y="569" font-size="19" fill="#52657A" font-weight="400">Rank filing passages</text>
+<text x="759" y="598" font-size="19" fill="#52657A" font-weight="400">Replay eligible briefs</text>
+<text x="759" y="627" font-size="19" fill="#52657A" font-weight="400">Store conversation turns</text>
+<text x="759" y="656" font-size="19" fill="#52657A" font-weight="400">Keep local indexes</text>
+<text x="73" y="731" font-size="17" fill="#52657A" font-weight="400">Runtime bindings hold credentials. The browser receives results and evidence metadata.</text>
+<path d="M167 755 V826" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M429 755 V826" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M691 755 V826" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M953 755 V826" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="48" y="827" width="238" height="158" rx="12" fill="#EFF3FC" stroke="#D6E1E7"/>
+<text x="71" y="864" font-size="22" fill="#172B45" font-weight="700">SEC EDGAR</text>
+<text x="71" y="897" font-size="19" fill="#52657A" font-weight="400">Submissions</text>
+<text x="71" y="926" font-size="19" fill="#52657A" font-weight="400">Filing HTML</text>
+<text x="71" y="955" font-size="19" fill="#52657A" font-weight="400">XBRL facts</text>
+<rect x="310" y="827" width="238" height="158" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="333" y="864" font-size="22" fill="#172B45" font-weight="700">Market data</text>
+<text x="333" y="897" font-size="19" fill="#52657A" font-weight="400">Yahoo chart API</text>
+<text x="333" y="926" font-size="19" fill="#52657A" font-weight="400">Prototype context</text>
+<text x="333" y="955" font-size="19" fill="#52657A" font-weight="400">Separate source</text>
+<rect x="572" y="827" width="238" height="158" rx="12" fill="#EAF6F2" stroke="#D6E1E7"/>
+<text x="595" y="864" font-size="22" fill="#172B45" font-weight="700">Google Gemini</text>
+<text x="595" y="897" font-size="19" fill="#52657A" font-weight="400">Writer and reviewer</text>
+<text x="595" y="926" font-size="19" fill="#52657A" font-weight="400">Follow-up answers</text>
+<text x="595" y="955" font-size="19" fill="#52657A" font-weight="400">Optional vectors</text>
+<rect x="834" y="827" width="238" height="158" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="857" y="864" font-size="22" fill="#172B45" font-weight="700">Supabase</text>
+<text x="857" y="897" font-size="19" fill="#52657A" font-weight="400">Optional persistence</text>
+<text x="857" y="926" font-size="19" fill="#52657A" font-weight="400">Briefs and turns</text>
+<text x="857" y="955" font-size="19" fill="#52657A" font-weight="400">Server-role access</text>
+<text x="48" y="1037" font-size="18" fill="#52657A" font-weight="400">Retrieval indexes stay in process, including when durable memory is enabled.</text>
+</g></svg>

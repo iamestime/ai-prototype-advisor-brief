@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1140" viewBox="0 0 1120 1140" role="img" aria-labelledby="title description">
+<title id="title">Follow-up retrieval</title><desc id="description">Retained sections are chunked for BM25 and optional vector scoring. Weighted fusion selects a bounded set of passages for a factual question, followed by answer checks.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#73889C" stroke-width="1.5"/></marker></defs>
+<rect x="1" y="1" width="1118" height="1138" rx="20" fill="#FFFFFF" stroke="#D6E1E7"/>
+<g font-family="DejaVu Sans, Arial, sans-serif">
+<text x="48" y="45" font-size="14" fill="#086C64" font-weight="700">ADVISOR BRIEF  /  03</text>
+<text x="48" y="86" font-size="31" fill="#172B45" font-weight="700">Small evidence packets for specific questions</text>
+<text x="48" y="116" font-size="17" fill="#52657A" font-weight="400">Lexical retrieval is the default. Semantic retrieval is an explicit option.</text>
+<rect x="64" y="151" width="992" height="99" rx="12" fill="#EFF3FC" stroke="#D6E1E7"/>
+<text x="87" y="188" font-size="22" fill="#172B45" font-weight="700">Retained filing sections</text>
+<text x="87" y="221" font-size="19" fill="#52657A" font-weight="400">Accession-keyed evidence; original form, item, URL, and fetch metadata.</text>
+<path d="M560 250 V289" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="64" y="290" width="992" height="99" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="87" y="327" font-size="22" fill="#172B45" font-weight="700">Overlapping passages</text>
+<text x="87" y="360" font-size="19" fill="#52657A" font-weight="400">900-character target · 150-character overlap · sentence-boundary preference</text>
+<path d="M365 389 V420 H301 V450" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M755 389 V420 H807 V450" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<rect x="64" y="451" width="474" height="142" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="87" y="488" font-size="22" fill="#172B45" font-weight="700">BM25 · always available</text>
+<text x="87" y="521" font-size="19" fill="#52657A" font-weight="400">Token frequencies and document lengths</text>
+<text x="87" y="550" font-size="19" fill="#52657A" font-weight="400">k1 = 1.4 · b = 0.75</text>
+<text x="87" y="579" font-size="19" fill="#52657A" font-weight="400">Normalize by the top lexical score</text>
+<rect x="558" y="451" width="498" height="142" rx="12" fill="#EAF6F2" stroke="#D6E1E7"/>
+<text x="581" y="488" font-size="22" fill="#172B45" font-weight="700">Gemini vectors · optional</text>
+<text x="581" y="521" font-size="19" fill="#52657A" font-weight="400">Embedding batches of 32 passages</text>
+<text x="581" y="550" font-size="19" fill="#52657A" font-weight="400">Normalized vectors and query embedding</text>
+<text x="581" y="579" font-size="19" fill="#52657A" font-weight="400">Cosine similarity; lexical fallback</text>
+<path d="M301 593 V622 H480 V650" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M807 593 V622 H640 V650" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<rect x="64" y="651" width="992" height="106" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="87" y="688" font-size="22" fill="#172B45" font-weight="700">Question scoring and weighted fusion</text>
+<text x="87" y="721" font-size="19" fill="#52657A" font-weight="400">Hybrid: 0.45 × lexical + 0.55 × max(0, cosine). Otherwise: lexical score alone.</text>
+<path d="M560 757 V797" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="64" y="798" width="992" height="105" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="87" y="835" font-size="22" fill="#172B45" font-weight="700">Select the evidence packet</text>
+<text x="87" y="868" font-size="19" fill="#52657A" font-weight="400">Up to 6 passages · at most 2 per section · no minimum relevance threshold</text>
+<path d="M560 903 V942" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="64" y="943" width="992" height="126" rx="12" fill="#EAF6F2" stroke="#D6E1E7"/>
+<text x="87" y="980" font-size="22" fill="#172B45" font-weight="700">Answer, then check</text>
+<text x="87" y="1013" font-size="19" fill="#52657A" font-weight="400">Gemini receives selected passages and up to 6 prior conversation turns.</text>
+<text x="87" y="1042" font-size="19" fill="#52657A" font-weight="400">Allow-list citations; check figures, any returned quote, and screened language.</text>
+<text x="64" y="1110" font-size="17" fill="#52657A" font-weight="400">Q&amp;A does not run the briefing’s separate model review. Answerability still needs evaluation.</text>
+</g></svg>

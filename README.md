@@ -1,429 +1,480 @@
+<p align="center">
+  <img src="docs/readme/hero.svg" alt="Advisor Brief. Company research with an evidence trail. A public software engineering exercise by Estimé Aristomene, Jr." width="100%">
+</p>
+
+<p align="center">
+  <a href="https://ai-prototype-advisor-brief.lovable.app/">Explore the application</a> ·
+  <a href="https://www.figma.com/design/fD6W8sS8wV8ULVIsClo4sw/Advisor-Brief---AI-Prototype?node-id=0-1">Figma design</a> ·
+  <a href="docs/Advisor_Brief__Deck.pptx">Product presentation</a> ·
+  <a href="SECURITY.md">Security policy</a>
+</p>
+
 # Advisor Brief
 
-### One minute, one page, every claim traceable to a filing.
+An advisor has a client call in ten minutes. The client wants to discuss a company the advisor has not reviewed recently. Reading the filings takes time; accepting a fluent summary without checking its sources creates a different problem.
 
-[Live application](https://ai-prototype-advisor-brief.lovable.app/) · [Figma design](https://www.figma.com/design/fD6W8sS8wV8ULVIsClo4sw/Advisor-Brief---AI-Prototype?node-id=0-1) · [Product deck](docs/Advisor_Brief__Deck.pptx) · [Security policy](SECURITY.md)
+Advisor Brief explores that moment. Enter a ticker or company name to assemble a market snapshot, filed financials, six briefing sections, and follow-up answers. The application keeps the supporting filing close to the statement: form, item, accession number, source URL, and the checks applied to the claim.
 
-![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)
-![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)
-![Gemini](https://img.shields.io/badge/Google_Gemini-direct_API-8E75B2?logo=googlegemini&logoColor=white)
-![SEC EDGAR](https://img.shields.io/badge/evidence-SEC_EDGAR-17324D)
-![Security](https://img.shields.io/badge/secrets-server_only-159957)
+**This repository is a public software engineering and product design exercise.** It demonstrates an approach to building an inspectable AI research workflow, including the behavior when generation, review, or retrieval is incomplete. It is a prototype for evaluation and discussion—not an investment recommendation service, a client-distribution system, or evidence of regulatory approval.
 
-Advisor Brief is a full-stack research prototype for the moment a wealth-management client asks about a company the advisor has not reviewed recently. Enter a ticker or company name and the application assembles a live market snapshot, eight quarters of filed results, a concise narrative, material changes, ranked risks, recent 8-K events, talking points, and grounded follow-up answers.
+The engineering question is simple: **what should the software require before it presents a generated statement as supported?** The answer here combines constrained evidence, a separate model review, deterministic checks, explicit display policies, and a fallback constructed from source data. Each mechanism has limits; those limits are part of the design discussion below.
 
-The differentiator is not the summary. It is the evidence path. Every generated claim names the filing section used to write it, passes through an isolated independent review, and remains subject to deterministic citation, quote, and figure checks. If Gemini capacity is unavailable, the system replaces unverified model output with a complete source-derived narrative assembled from structured XBRL facts and verbatim filing excerpts. The advisor still receives a useful brief, and the UI says exactly which verification path ran.
+## Read this repository
 
-> **Public demonstration exercise.** This repository demonstrates product judgment, client discovery translated into software, grounded AI orchestration, failure-aware engineering, and clear operating controls. It is not investment advice, a research recommendation, or a production compliance system.
+| If you are evaluating… | Start here                                                                                                        |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Product judgment       | [The exercise](#the-exercise) and [the advisor workspace](#the-advisor-workspace)                                 |
+| System design          | [Architecture](#architecture) and [the request lifecycle](#the-request-lifecycle)                                 |
+| AI reliability         | [Claim review](#claim-review) and [failure behavior](#failure-behavior)                                           |
+| Retrieval and state    | [Follow-up questions](#follow-up-questions) and [memory and freshness](#memory-and-freshness)                     |
+| Running the code       | [Local development](#local-development), [configuration](#configuration), and [verification](#verification)       |
+| Production readiness   | [Security boundaries](#security-boundaries) and [production work still required](#production-work-still-required) |
 
-## Engineering coverage
+## The exercise
 
-This project was built to make its engineering decisions inspectable. The table below connects each major capability to its implementation and visible product behavior.
+The task is deliberately narrow: help an advisor get oriented in public company filings and inspect the basis for a statement before relying on it. The application exposes enough of its working state to make the exercise reviewable.
 
-| Capability | Implementation | Evidence in the product |
-| --- | --- | --- |
-| Cloud deployment | TanStack Start and Nitro compiled to a Cloudflare module runtime, with GitHub as source of truth | Public HTTPS deployment, edge server routes, runtime-bound secrets, SSE streaming |
-| LLM verification | Independent Gemini review plus deterministic citation, quote, and figure checks | Claim verdicts, evidence coverage, located quotes, unmatched figures, held claims |
-| Embedding model | Direct Gemini embedding model, enabled explicitly | Semantic vectors, model provenance, cosine score beside lexical score |
-| Vector retrieval | Passage vectors held in an accession-keyed retrieval index; BM25 remains a complete fallback | Hybrid ranking diagnostics and deterministic lexical continuity |
-| Framework | React 19, TanStack Start/Router/Query, TypeScript, Vite, Nitro | Full-stack typed routes, SSR-capable shell, streamed server events |
-| Multi-agent orchestration | Evidence, research, review, deterministic verification, retrieval, Q&A, and guardrail responsibilities | Bounded inputs, outputs, evidence scopes, sequencing, and failure contracts |
-| Memory | Accession-keyed brief replay and bounded session/ticker conversation history | In-process adapter by default; durable Supabase Postgres adapter and migration |
-| Guardrails | Pre-inference refusal, source sanitization, citation allow-listing, output screening, fail-closed policies | Visible guardrail report for every briefing and follow-up answer |
-| AI frontend | Figma-designed, progressive, evidence-first advisor workspace rather than a chat transcript | Six-section brief, charts, live pipeline state, claim citations, validation details, follow-up Q&A |
+| Capability        | Implemented approach                                                  | Engineering purpose                                           |
+| ----------------- | --------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Company research  | SEC resolution, submissions, selected filing sections, and XBRL facts | Turn heterogeneous public data into a usable research context |
+| Brief generation  | One streamed Gemini request for six structured sections               | Deliver progressively through a bounded output contract       |
+| Claim review      | Separate Gemini invocation, then quote and figure checks              | Treat the review model as another component to verify         |
+| Continuity        | Filing Digest and a source-derived briefing path                      | Preserve useful work through model unavailability             |
+| Follow-up answers | BM25, optional embeddings, citations, and conversation context        | Answer from a defined evidence corpus                         |
+| State             | Accession-based keys, replay, and optional Postgres persistence       | Separate reusable evidence from conversation history          |
+| Interface         | Responsive research workspace with visible evidence states            | Make system behavior understandable to the user               |
 
-The prototype does not claim that an in-memory vector index is a managed vector database. For production scale, the same embedding contract can be persisted in Postgres with pgvector or a dedicated vector service. The current choice keeps the public exercise inexpensive, reproducible, and operational without hiding a database dependency.
+The six narrative sections are a **60 second summary**, **what changed since last quarter**, **top risks**, **recent 8-K events**, **talking points**, and **questions the client may ask**. Their contracts live in [`research.ts`](src/server/advisor/research.ts). They combine paragraphs, cited items, dated events, and question/answer pairs rather than forcing every output into an unstructured chat transcript.
 
-## Product thesis
+There is no measured claim here about advisor productivity, investment outcomes, production accuracy, or guaranteed completion time. “60 second summary” describes a reading format, not a latency benchmark. The product deck supplies proposal context; it does not establish a deployed institutional pilot.
 
-An advisor should not have to choose between reading hundreds of pages and trusting an opaque third-party summary. Advisor Brief is designed around a more useful contract:
+### Demonstration sequence
 
-| Advisor need                             | Product response                                                     |
-| ---------------------------------------- | -------------------------------------------------------------------- |
-| Get oriented before the call             | Live quote context and an eight-quarter filed financial view         |
-| Understand the current story             | Six concise narrative sections written from recent filings only      |
-| Check a statement quickly                | Filing, item, accession, SEC link, and fetch time on every claim     |
-| Avoid repeating an unsupported assertion | Independent Gemini review plus deterministic quote and figure checks |
-| Continue the conversation                | Session-aware follow-up Q&A grounded in retrieved filing passages    |
-| Remain useful during an AI incident      | Complete source-derived narrative plus deterministic Filing Digest   |
+1. Request a briefing for a supported SEC registrant, such as `NVDA`.
+2. Watch identity, filing inventory, financials, and the Filing Digest arrive before the narrative finishes.
+3. Open a claim's evidence details. Compare its wording, source, reviewer quote, numeric checks, and verdict.
+4. Ask “What does management say about supply?” Inspect the retrieved passages and linked sources.
+5. Ask “Should I buy this stock?” The implemented detector refuses this example before inference.
+6. Request the company again to inspect replay, or use `fresh=1` on the briefing endpoint to bypass briefing replay.
 
-Dark mode is the first-visit default. An explicit light-mode preference is preserved locally.
+Use public company questions only. These demonstration routes do not establish authenticated advisor identities or a confidential client workspace.
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    UI["Advisor workspace<br/>React 19 + TanStack Start"] -->|"SSE brief / JSON Q&A"| EDGE["Cloudflare runtime<br/>Nitro server routes"]
-    EDGE --> ORCH["Briefing orchestrator<br/>priority + failure policy"]
+<p align="center">
+  <img src="docs/readme/architecture.svg" alt="Architecture: the React workspace uses three server routes. Server orchestration connects SEC evidence, Gemini writing and review, deterministic checks, and memory. Market data is a separate input. Optional Supabase stores briefings and conversations; retrieval indexes remain in process." width="100%">
+</p>
 
-    ORCH --> DATA["Evidence plane<br/>EDGAR · XBRL · market snapshot"]
-    ORCH --> MODELS["Gemini plane<br/>writer · reviewer · Q&A"]
-    ORCH --> CONTROL["Trust plane<br/>citations · figures · quotes · guardrails"]
+The browser owns presentation and interaction. TanStack Start server routes own evidence acquisition, model calls, policy decisions, and memory access. The custom server entry registers runtime bindings before loading the application handler, keeping privileged credentials outside the frontend build.
 
-    DATA --> MEMORY["Memory plane<br/>in-process or Supabase"]
-    MODELS --> CONTROL
-    CONTROL -->|"reviewed or source-derived brief"| UI
-    CONTROL --> MEMORY
+| Boundary              | Responsibility                                                                    | Source                                                                                                                       |
+| --------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Workspace             | Search, streaming state, charts, evidence inspection, questions, theme preference | [`src/routes/index.tsx`](src/routes/index.tsx)                                                                               |
+| Orchestration         | Sequence the brief, answer follow-ups, expose recent memory                       | [`src/routes/api/public/`](src/routes/api/public/)                                                                           |
+| Research components   | Acquire, parse, generate, review, retrieve, screen, remember                      | [`src/server/advisor/`](src/server/advisor/)                                                                                 |
+| Runtime configuration | Read server bindings and configure inference                                      | [`src/server.ts`](src/server.ts), [`runtime-env.ts`](src/server/runtime-env.ts), [`config.ts`](src/server/advisor/config.ts) |
+
+Gemini is called directly through Google's OpenAI-compatible HTTP interface. “OpenAI-compatible” describes the request format; it does not mean OpenAI serves the model. The configured provider is Gemini. The Lovable build integration supplies application tooling, not the inference gateway.
+
+### Explicit orchestration
+
+The repository divides responsibilities often called “agents”: evidence acquisition, research, review, retrieval, guardrails, and continuity. These are bounded functions and request stages. They do not autonomously choose tools, plan arbitrary tasks, or run as independently deployed services.
+
+The main route makes ordering visible. It loads evidence, streams the writer, recovers missing blocks sequentially, requests a whole-brief review, and then builds the retrieval index. This avoids starting competing model work simply because it can be parallelized. Independent source fetches still run concurrently.
+
+The normal complete generation path uses one writer call and one review call. That is a **logical call budget**, not a guaranteed count of HTTP attempts: retries, model fallback, and missing-block regeneration can add requests. Embeddings are off by default; factual follow-ups normally use one answer call after retrieval.
+
+## The request lifecycle
+
+[`advisor-brief.ts`](src/routes/api/public/advisor-brief.ts) is the orchestration entry point.
+
+1. **Validate and admit.** Check the company query and the in-process client rate bucket. Invalid input returns JSON with HTTP `400`; a full bucket returns `429` before streaming starts.
+2. **Resolve and load.** Resolve the SEC CIK, request submissions and Company Facts, and fetch market context. Select the latest exact `10-K` and `10-Q` forms plus `8-K` filings from the preceding 90 days.
+3. **Consider replay.** Build a key from the canonical ticker and sorted accessions. An eligible cached briefing can be replayed with newly requested quote data and the current Company Facts result. Underlying source caches still apply.
+4. **Deliver evidence first.** On a cache miss, emit filing metadata, financials, parsed-section metadata, and the Filing Digest. Useful source information arrives before generation succeeds or fails.
+5. **Stream the writer.** Prepare bounded excerpts and request six structured blocks. A brace-aware parser reconstructs complete JSON objects across transport chunks; a network chunk is not assumed to equal a JSON object.
+6. **Repair incomplete output.** Regenerate missing blocks sequentially with block-specific schemas. Report remaining incompleteness explicitly.
+7. **Review and reconcile.** Gather the claims for a separate review invocation, then apply quote and figure checks. Emit block verdicts and an aggregate summary.
+8. **Finish supporting state.** Build the retrieval index, send guardrail results and completion, and attempt to persist an eligible briefing. The `done` event precedes the memory write; it is not a durable-commit acknowledgment.
+
+### Streaming is an evolving result
+
+`block` events arrive before review, so generated text can be visible while verification is pending. Subsequent `validation` events update its display policy. A fallback may emit the same block name again to replace earlier content.
+
+The current UI is therefore **not a strict publish-only-after-verification barrier**. A production workflow requiring that property would stage text until review completes. API consumers must also distinguish an HTTP error before streaming from an `error` event inside a stream that already returned HTTP `200`.
+
+## Evidence acquisition and financial data
+
+[`edgar.ts`](src/server/advisor/edgar.ts) implements the source adapters; [`pipeline.ts`](src/server/advisor/pipeline.ts) assembles their shared loading steps.
+
+| Source                       | Material used                                                                      | Boundary                                                   |
+| ---------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| SEC company ticker data      | Company name, ticker, CIK                                                          | Registrant coverage, not universal instrument search       |
+| SEC submissions              | Forms, dates, accessions, document locations                                       | Selection targets exact `10-K`, `10-Q`, and `8-K` forms    |
+| Filing HTML                  | Annual business, risk factors, MD&A; quarterly MD&A and risks; current-report text | Heuristic extraction; sections can be missing or truncated |
+| SEC XBRL Company Facts       | Revenue, net income, EPS, dividends, shares outstanding                            | Tag and period logic needs issuer-specific evaluation      |
+| Yahoo Finance chart endpoint | Prototype price, volume, ranges, exchange, timestamp                               | Separate market context, not a licensed production feed    |
+
+Each section preserves its ID, form, item, filing date, accession, URL, fetch timestamp, character count, and truncation flag. The UI can link back to the input used by the application.
+
+### Two text budgets
+
+Extraction retains up to 18,000 characters for business sections, 30,000 for risk factors, 45,000 for MD&A, and 6,000 for an `8-K` body. The writer gets a further bounded view: up to 12,000 characters per non-`8-K` section and 6,000 per `8-K`. Shortened views preserve roughly 70% from the beginning and 30% from the end.
+
+This reduces quota and context pressure but may omit material in the middle. Quote and figure checks use the retained section text, which may itself be truncated—not necessarily the complete original filing. The number of filings can increase total request size; per-section limits are not a global token ceiling.
+
+### Fiscal periods and derived values
+
+The financial adapter identifies quarter-length and annual facts, keeps the latest filed value for a period, and can derive a fourth quarter by subtracting three reported quarters from an annual value. Candidate tags are selected by recency and coverage. Revenue, net income, and EPS expose up to eight quarterly points; dividends use up to four.
+
+Market capitalization, trailing P/E, and dividend yield are computed when inputs exist. These can combine observations from different dates—for example, current price and shares outstanding from a filing. They are derived values, not exchange-certified measurements. Annual-minus-quarter arithmetic for per-share metrics and unusual fiscal calendars also needs more extensive evaluation.
+
+## Claim review
+
+<p align="center">
+  <img src="docs/readme/claim-review.svg" alt="Generated claim review: allow-list citations, prepare claim-specific evidence, request a separate Gemini verdict, check the quote and numeric expressions, then show, flag, or hold. Source-derived fallback uses a separate construction path rather than this complete review." width="100%">
+</p>
+
+The central implementation is [`validation.ts`](src/server/advisor/validation.ts). A generated claim does not become supported merely because the writer supplied a citation.
+
+### Citation integrity
+
+The writer may cite only section IDs supplied for the request. Unknown IDs are removed and counted. This prevents a fabricated identifier from becoming a working citation, but does not establish that the remaining prose is correct. A claim without a surviving citation receives an `uncited` verdict.
+
+### Separate review context
+
+The reviewer receives claim IDs, claim text, and excerpts from each claim's cited sections. Its prompt forbids borrowing evidence from another claim. The default writer and reviewer model names are the same: “independent review” means separate invocation and context, not independence of model family or failure modes.
+
+Excerpt selection scores windows for overlapping terms and numbers. The nominal evidence budget is 2,400 characters per claim, divided among cited sections with a 700-character minimum per section. Heavily cited claims can exceed that nominal budget. The whole review request grows with claim count.
+
+### Check the reviewer, too
+
+The model returns a verdict, quote, and reason. The server checks the quote against retained cited text, first through normalized containment and then through token-sequence tolerance for sufficiently long quotes. This accommodates extraction differences; it is not a strictly verbatim or cryptographic comparison.
+
+Numeric checking extracts expressions, accounts for common scale words and filing units, and permits rounding at the claim's precision. A match establishes that a compatible value occurs in the evidence. It does not prove the correct metric, entity, period, sign, or accounting interpretation. Those relationships still depend on evidence and review quality.
+
+### Verdicts and display policy
+
+| Verdict       | Meaning here                                                             | Default treatment                     |
+| ------------- | ------------------------------------------------------------------------ | ------------------------------------- |
+| `supported`   | Reviewer support, a located quote, and no unmatched checked figures      | Display with evidence state           |
+| `partial`     | Partial model support, or a supported verdict fails a quote/figure check | Display marked for review             |
+| `unsupported` | Reviewer does not support the statement                                  | Hold with `VALIDATION_POLICY=exclude` |
+| `uncited`     | No usable citation attached                                              | Display marked for review             |
+| `unverified`  | No usable reviewer verdict                                               | Hide with `UNVERIFIED_POLICY=hide`    |
+
+Output-screening flags can also hold narrative items. Held content remains inspectable in the review area. These are UI policies over transmitted content, not removal of every unsupported statement from the API response.
+
+`supportedPct` reports the fraction of claims this pipeline classifies as supported. **It is not calibrated confidence, an accuracy benchmark, or a guarantee of correctness.** Source-derived output receives a different construction-based summary; its percentage is not comparable to measured model-review accuracy.
+
+## Failure behavior
+
+[`digest.ts`](src/server/advisor/digest.ts) implements two distinct non-generative outputs.
+
+**Filing Digest** is assembled early from source metadata, XBRL-derived facts, recent filing events, and section information. It remains available when narrative features are unconfigured, provided source acquisition succeeds.
+
+**Source-derived briefing** maps available facts, selected filing sentences, and fixed explanatory text into six section shapes. The orchestrator attempts it when a configured writer fails or no claim receives a usable independent review. It cannot manufacture missing source data, events, or reliable extraction.
+
+| Condition                                 | Current behavior                                                               |
+| ----------------------------------------- | ------------------------------------------------------------------------------ |
+| No Gemini credential                      | Emit `research_failed`; retain source data and Filing Digest; no generated Q&A |
+| Retryable provider failure                | Backoff and retry, then try configured Gemini candidates                       |
+| Configured writer fails                   | Attempt source-derived briefing                                                |
+| Narrative block missing                   | Sequential regeneration; report remaining incompleteness                       |
+| No usable independent claim review        | Replace generated blocks with the source-derived path                          |
+| Some claims lack review                   | Apply individual policies; partial review need not trigger full fallback       |
+| Embedding batch/query fails               | Use lexical retrieval                                                          |
+| Individual filing fails to load           | Continue with successfully parsed documents where possible                     |
+| Required company/source acquisition fails | Emit a stream error; fallback cannot repair absent evidence                    |
+| Market quote fails                        | Retain unavailable values rather than invent a price                           |
+| Optional database fails initial probe     | Log the issue and use in-process memory                                        |
+
+The source-derived path assigns `supported`/`verified` states by construction, sets `sourceDerived=true`, and does not run generated-claim quote and figure review. Some XBRL-derived statements link to a contextual filing section rather than the specific fact record. Typed provenance and distinct validation semantics remain necessary before regulated use.
+
+### Transport and quota decisions
+
+[`providers.ts`](src/server/advisor/providers.ts) retries HTTP `429`, server errors, and certain network failures. It honors `Retry-After` up to 30 seconds; otherwise it applies exponential backoff with jitter. Nonretryable HTTP responses stop retries for that candidate, but the outer chat loop can still attempt another model.
+
+`AI_MAX_ATTEMPTS` is capped at five. Multiple chat candidates further limit attempts to two per candidate. Timeouts apply per attempt, so total latency can exceed a single timeout through retries and fallback. There is no distributed request queue or global deadline.
+
+## Follow-up questions
+
+<p align="center">
+  <img src="docs/readme/retrieval.svg" alt="Follow-up retrieval: retained sections become overlapping passages. BM25 is always available; optional Gemini vectors add cosine scores. Ranking selects up to six passages, at most two per section. Gemini receives the passages and recent turns; citations, figures, quote, and output are checked." width="100%">
+</p>
+
+A brief summarizes selected sections; a question needs a smaller evidence set targeted to what was asked. [`retrieval.ts`](src/server/advisor/retrieval.ts) and [`advisor-ask.ts`](src/routes/api/public/advisor-ask.ts) implement that distinction.
+
+### Retrieval mechanics
+
+1. Split retained sections into passages targeting 900 characters, with 150 characters of overlap and a sentence-boundary preference.
+2. Build BM25 token statistics with `k1=1.4` and `b=0.75`.
+3. When embeddings are enabled, request vectors in batches of 32 and normalize them. A failed/incomplete batch discards the vector path for the index.
+4. Score the query lexically; if vectors are available, embed the question and compute cosine similarity.
+5. Rank by normalized lexical score, or `0.45 × lexical + 0.55 × max(0, cosine)` in hybrid mode.
+6. Select up to six passages, with at most two from one section.
+
+This is weighted score fusion, not reciprocal rank fusion. The section cap encourages variety without guaranteeing different filings. There is no minimum relevance threshold: weak questions can still retrieve low-value passages, so answerability requires evaluation.
+
+### Answer construction
+
+Recognized sensitive-data patterns and recommendation requests are handled before a model call. Admitted questions load the current filing key, reuse or rebuild the index, and send selected passages plus at most six prior conversation turns to Gemini. Its structured response includes text, citation IDs, a quote, and an `answerable` flag.
+
+Returned citations are restricted to retrieved passage IDs. Quote and figure checks, answerability, and output screening produce `supported`, `review`, `not_in_filings`, or `compliance`. Refusals and provider failures use `refused` and `unavailable`. Follow-up answers do **not** receive the briefing's separate model review.
+
+A current nuance: an absent follow-up quote produces `quoteFound=null`; only a failed quote check forces review. A `supported` answer therefore does not establish that a quote was returned and matched. If no citations survive, checks use all retrieved text while the verdict still requires review.
+
+## Memory and freshness
+
+[`memory.ts`](src/server/advisor/memory.ts) separates three kinds of state. The database adapter persists two; it does not turn retrieval into a managed vector database.
+
+| State           | Key and bounds                                                       | Default              | Optional persistence                         |
+| --------------- | -------------------------------------------------------------------- | -------------------- | -------------------------------------------- |
+| Briefing replay | Uppercase ticker + sorted accessions; six-hour TTL; local cap of 100 | Warm-instance memory | `advisor_briefings` event record and summary |
+| Conversation    | Sanitized session + ticker; last 12 turns, six supplied as context   | Warm-instance memory | `advisor_conversations` turn array           |
+| Retrieval index | Filing key; local cap of 40 indexes                                  | Warm-instance memory | Still local with Supabase enabled            |
+
+Newly observed accessions change the briefing key. Observation is not instantaneous: ticker lookup is cached for 24 hours, submissions and Company Facts for one hour, and filing documents for six hours. `fresh=1` bypasses replay, not these source caches.
+
+Replay refreshes quote and financial events but retains the original narrative and other recorded events. Generation time and current data timestamps have different meanings; replay is not a new independent review.
+
+Eligibility requires a nonfailed record with claims and a status other than `unverified`; it does not require every claim to be supported. Source-derived records can qualify. A current edge case after reviewer failure takes the stored summary from the first `validation_summary`, even when a later fallback supersedes it; that can prevent a recovered brief from replaying.
+
+The optional migration enables RLS without browser policies; the adapter uses a server-side service-role credential. That protects direct table access but does not authorize callers of the public memory endpoint. Session IDs are grouping keys, not identity proof. Retention, atomic concurrent turn appends, tenant ownership, and audit-grade persistence remain production work.
+
+## The advisor workspace
+
+The interface follows the reading task: identify the company, establish the filing period, understand the business, and inspect uncertain statements. It combines market context, financial charts, narrative blocks, evidence details, held claims, and questions.
+
+| Interface choice      | Purpose                                           | Implementation                                     |
+| --------------------- | ------------------------------------------------- | -------------------------------------------------- |
+| Progressive sections  | Make fetched facts useful while generation runs   | SSE events update separate state slices            |
+| Evidence beside prose | Shorten the path from claim to source             | Filing links, reasons, quotes, figure checks       |
+| Financial chart       | Inspect reported periods and trends               | Recharts over the derived quarterly series         |
+| Review states         | Distinguish pending, supported, flagged, and held | Claim and block status components                  |
+| Operational detail    | Make the exercise diagnosable                     | Pipeline state, retrieval mode, timing, guardrails |
+| Theme preference      | Support different reading environments            | Dark first visit; persisted light selection        |
+
+The [Figma file](https://www.figma.com/design/fD6W8sS8wV8ULVIsClo4sw/Advisor-Brief---AI-Prototype?node-id=0-1) is the linked design reference. React and TypeScript implement runtime behavior. This README's illustrations use an opaque light background for consistent contrast on GitHub; they do not change the application's dark-first default.
+
+## API reference
+
+All routes are public demonstration endpoints and handle `OPTIONS` through the shared CORS configuration.
+
+| Method and route                 | Input                                         | Response                                                 |
+| -------------------------------- | --------------------------------------------- | -------------------------------------------------------- |
+| `GET /api/public/advisor-brief`  | Required `q`; optional `fresh=1`              | SSE stream, or JSON input/rate errors before streaming   |
+| `POST /api/public/advisor-ask`   | JSON `ticker`, `question`, optional `session` | Answer/refusal, verdict, and available evidence metadata |
+| `GET /api/public/advisor-memory` | Optional `ticker` and `session`               | Recent eligible briefings or selected conversation       |
+
+Queries allow up to 64 characters from a defined character set. Normalized questions must be 3–600 characters. Session IDs allow letters, numbers, underscore, and hyphen, are limited to 64 characters, and default to `anon`. The briefing route does not use a session parameter; sessions belong to question and memory routes.
+
+### Local examples
+
+Use Vite's printed address; these examples assume port `5173`.
+
+```bash
+curl -N 'http://localhost:5173/api/public/advisor-brief?q=NVDA&fresh=1'
+
+curl 'http://localhost:5173/api/public/advisor-ask' \
+  -H 'content-type: application/json' \
+  --data '{"ticker":"NVDA","question":"What does management say about supply?","session":"readme-demo"}'
+
+curl 'http://localhost:5173/api/public/advisor-memory?ticker=NVDA&session=readme-demo'
 ```
 
-The server is the trust boundary. `GEMINI_API_KEY` is resolved only from server process variables or Cloudflare/Nitro runtime bindings. It is never stored in a `VITE_` variable, client bundle, browser response, or repository file.
+### Event contract
 
-Research, validation, and follow-up answers call Google’s Gemini API directly. There is no Lovable AI gateway, Claude path, Anthropic integration, OpenAI fallback, or silent vendor substitution.
+| SSE events                                                         | Interpretation                                                       |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| `resolved`, `filings`, `quote`, `financials`, `sections`, `digest` | Identity and source data                                             |
+| `memory`, `status`                                                 | Replay information and progress                                      |
+| `block`                                                            | Narrative block; a subsequent event can replace the same named block |
+| `validation`, `validation_summary`                                 | Claim verdicts and aggregate review state                            |
+| `index`, `guardrails`, `usage`                                     | Retrieval, screening, and recorded model usage                       |
+| `research_failed`                                                  | Narrative unavailable/incomplete; source content may remain useful   |
+| `done`, `error`                                                    | Completion or an in-stream error                                     |
 
-## Request lifecycle
-
-```mermaid
-sequenceDiagram
-    actor Advisor
-    participant API as Briefing API
-    participant Evidence as SEC / XBRL / Market
-    participant Writer as Gemini writer
-    participant Reviewer as Gemini reviewer
-    participant Trust as Deterministic verifier
-    participant Memory
-
-    Advisor->>API: Ticker or company
-    par Authoritative acquisition
-        API->>Evidence: Resolve CIK and filings
-        API->>Evidence: Fetch facts and quote
-    end
-    Evidence-->>API: Sections + provenance
-    API-->>Advisor: Facts + Filing Digest
-    API->>Writer: Citation-constrained six-block brief
-    Writer-->>API: Stream narrative blocks
-    API-->>Advisor: Render blocks as they arrive
-    Note over API,Reviewer: Writer stream closes before review begins
-    API->>Reviewer: All claims + compact cited evidence
-    Reviewer-->>API: Verdict + verbatim quote per claim
-    API->>Trust: Full-text quote, figure, and citation checks
-    alt Independent review completed
-        Trust-->>Advisor: Reviewed narrative + evidence coverage
-        API->>Memory: Cache reviewed result by accessions
-    else Writer or reviewer unavailable
-        API->>Trust: Build from XBRL and filing excerpts
-        Trust-->>Advisor: Source-verified six-section brief
-    end
-```
-
-This sequence is intentionally conservative. The earlier design launched six reviewer calls while the writer stream was open, then started embedding batches against the same key. That fan-out looked responsive on paper but created avoidable quota contention. The current design uses one writer call, one compact review call, and no embedding calls in the default briefing path. Bounded context, retry backoff, and a Gemini-only model ladder absorb transient capacity issues. If the provider remains unavailable, the orchestration completes with a fully cited source-derived brief rather than an empty state.
-
-## Multi-agent orchestration
-
-“Agent” describes a bounded responsibility, evidence scope, and failure contract. It does not mean an unconstrained autonomous process.
-
-| Agent                  | Receives                                             | Produces                                                    | Cannot do                                                    |
-| ---------------------- | ---------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------ |
-| Evidence agent         | Ticker or company name                               | CIK, filings, sections, XBRL series, market snapshot        | Generate narrative claims                                    |
-| Research agent         | Sanitized filing sections and allowed section IDs    | Six structured, cited briefing blocks                       | Use external company knowledge or invent citations           |
-| Review agent           | Claims and compact excerpts from cited sections only | Supported, partial, or unsupported verdict plus quote       | See the writer prompt or borrow evidence across claims       |
-| Deterministic verifier | Claims, verdicts, full cited text                    | Quote location, figure reconciliation, final display status | Treat a model verdict as self-authenticating                 |
-| Retrieval agent        | Accession-keyed filing chunks and a question         | Ranked evidence passages                                    | Answer the advisor directly                                  |
-| Q&A agent              | Ranked passages and bounded conversation context     | Short cited answer with evidence quote                      | Recommend a trade, predict returns, or use outside knowledge |
-| Guardrail layer        | Inputs, source text, and outputs                     | Refusals, flags, allow-listed citations, audit details      | Be overridden by text found inside a filing                  |
-| Continuity agent       | Structured XBRL facts and verbatim filing excerpts  | Six source-derived narrative blocks                         | Present source-derived text as model-generated               |
-
-### Model-call budget
-
-The public prototype treats provider capacity as a systems constraint.
-
-| Operation                                |      Default model calls | Scheduling rule                                    |
-| ---------------------------------------- | -----------------------: | -------------------------------------------------- |
-| Complete briefing                        |                        2 | One writer, then one whole-brief reviewer          |
-| Briefing retrieval index                 |                        0 | BM25 is complete by default; embeddings are opt-in |
-| Factual follow-up                        |                        1 | Retrieval finishes before Gemini is called         |
-| Recommendation or sensitive-data request |                        0 | Refused before inference                           |
-| Missing writer block                     | Sequential recovery only | Never fan out against the same key                 |
-
-Transient network errors, `429` responses, and `5xx` responses use bounded exponential backoff with `Retry-After` support. Invalid requests and authentication failures are not retried.
-
-## Evidence and validation model
-
-```mermaid
-flowchart LR
-    C["Generated claim"] --> A{"Allowed section ID?"}
-    A -->|No| R["Needs review"]
-    A -->|Yes| Q["Compact cited evidence"]
-    Q --> V["Independent Gemini verdict"]
-    V --> D{"Quote located<br/>and figures match?"}
-    D -->|Yes| S["Verified"]
-    D -->|Partial| R
-    D -->|Unsupported| H["Held from brief"]
-    V -->|Unavailable| F["Source-derived brief<br/>SEC facts + filing excerpts"]
-```
-
-The displayed percentage is evidence coverage, not a probability that the model is correct. It is calculated from independent review results when Gemini completes. When the continuity path runs, the UI changes the label to **Source verified** and evaluates only claims assembled directly from structured SEC data or verbatim filing excerpts. The two modes are intentionally distinct.
-
-For each claim, the review path records:
-
-- cited filing section and authoritative SEC URL;
-- accession number, form, item, filing date, and fetch time;
-- independently returned evidence quote and whether it exists in the full filing text;
-- every numeric expression checked and any unmatched figure;
-- reviewer model, provider, elapsed time, verdict, and display policy.
-
-Unsupported claims are held by default. Partial and uncited claims remain visibly marked for review. Internal section protocols are stripped at the server boundary and again in the UI, so strings such as XML section tags cannot leak into advisor-facing prose. When Gemini generation or review fails completely, unverified model text is replaced by the source-derived continuity path.
-
-## LLM verification and quality controls
-
-The review model does not rely on memory or general knowledge when checking the writer. It receives each claim with a compact packet containing only the filing sections cited by that claim. The application then verifies the reviewer’s output rather than trusting it automatically.
-
-| Control | Mechanism | Failure treatment |
-| --- | --- | --- |
-| Citation integrity | Returned section IDs must exist in the request allow-list | Unknown IDs are removed and counted |
-| Entailment | Independent Gemini context returns supported, partial, or unsupported | Partial claims remain marked; unsupported claims are held |
-| Evidence quote | Reviewer must return a short verbatim quote | Quote must be found again in the complete cited text |
-| Numerical consistency | Claim figures are normalized for filing units and reconciled | Unmatched values downgrade the claim to review |
-| Completeness | Six required blocks and non-empty claim collections | Missing blocks regenerate sequentially |
-| Compliance | Advice, forecasts, guarantees, and contact language are screened | Output is flagged or refused |
-| Provider continuity | Writer and reviewer use bounded retries and a Gemini model ladder | Source-derived narrative replaces unverifiable model output |
-
-The regression suite exercises arbitrary streaming boundaries, malformed and fenced JSON, invented citations, empty blocks, unit-scaled figures, missing quotes, provider throttling, model failover, reviewer outages, and the source-derived continuity path. Production acceptance runs fresh LLY, BA, NVDA, and ORCL briefings rather than replaying fixtures.
-
-## Frontend
-
-The advisor workspace is an information-dense, responsive React application rather than a chat shell.
-
-- Dark-first theme with a persisted light override
-- Server-Sent Events for progressive briefing status and narrative blocks
-- Market snapshot, 52-week range, and eight-quarter revenue/net-income chart
-- Six narrative sections with claim-level evidence state
-- Filing links, accession numbers, source sections, and fetch timestamps
-- Validation summary with evidence coverage, figure matches, located quotes, and held claims
-- Source-derived six-section continuity brief plus deterministic Filing Digest
-- Follow-up Q&A with visible `Gemini · <model>` provenance and filing sources
-- Session conversation memory and reviewed-brief replay
-- Live pipeline, retrieval mode, and guardrail outcomes for inspection
-
-### Figma design system and implementation contract
-
-The frontend was designed in [Figma](https://www.figma.com/design/fD6W8sS8wV8ULVIsClo4sw/Advisor-Brief---AI-Prototype?node-id=0-1) before implementation. The file is the visual source of truth for hierarchy, spacing, responsive intent, state transitions, and the relationship between narrative content and its evidence. The application is implemented directly in React and TypeScript; Figma is used for design governance, not as a runtime dependency or code-generation layer.
-
-| Design decision | Figma specification | Application behavior |
-| --- | --- | --- |
-| Advisor-first entry | Focused ticker/company search, demo entities, source and grounding promises | Keyboard-accessible search with deterministic input validation and clear starting context |
-| Progressive disclosure | Separate empty, streaming, and completed briefing states | SSE events populate market data, filings, narrative blocks, validation, and memory without blocking the full page |
-| Evidence beside analysis | Filing inventory, grounding status, citations, and validation occupy persistent workspace regions | Claims remain visually connected to form, item, accession, SEC URL, and verification state |
-| Financial scanability | Eight-quarter revenue and net-income chart paired with market context | SEC XBRL series are rendered as comparable fiscal periods with explicit source labels |
-| Operational transparency | Pipeline, model, timing, guardrail, and retrieval telemetry are first-class interface elements | Advisors can distinguish fetched facts, Gemini output, independent review, and source-derived continuity |
-| Dense but calm presentation | Dark navy canvas, restrained amber accent, compact typography, bordered information panels | Semantic tokens and reusable primitives preserve contrast, alignment, and hierarchy across viewport sizes |
-
-The design-to-code boundary is deliberate: visual composition comes from Figma; data authority, validation state, accessibility semantics, responsive behavior, and failure handling remain code-owned. This prevents a visually polished mockup from overstating what the system has actually verified.
-
-## Backend and API surface
-
-TanStack Start routes run through Nitro’s Cloudflare module target. A custom server entry copies runtime bindings into a server-only configuration bridge before route handlers are imported.
-
-| Route                              | Method | Contract                                                                                                                    |
-| ---------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `/api/public/advisor-brief?q=NVDA` | `GET`  | SSE stream: resolution, filings, quote, financials, digest, narrative, validation, guardrails, retrieval, usage, completion |
-| `/api/public/advisor-ask`          | `POST` | Filing-grounded answer, sources, quote and figure checks, retrieval diagnostics, Gemini provenance, guardrails              |
-| `/api/public/advisor-memory`       | `GET`  | Reviewed recent briefings or one ticker/session conversation thread                                                         |
-
-The briefing cache key combines the ticker with the sorted filing accessions used for the request. A new filing creates a new key. Cache eligibility is stricter than key freshness: the narrative must be complete and an independent review must have run.
+Consumers should tolerate repeat blocks and multiple summaries, using the final applicable state. `usage` is not complete billing telemetry: the writer accumulator does not include every reviewer, embedding, fallback, or follow-up call.
 
 ## Technology stack
 
-| Layer                  | Technology                                                                                   | Responsibility                                                   |
-| ---------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Web application        | React 19, TanStack Start, TanStack Router, TanStack Query                                    | SSR-capable application shell, routing, state, and streaming UI  |
-| Design system          | Tailwind CSS 4, Radix UI primitives, Lucide                                                  | Responsive layout, tokens, accessible controls, iconography      |
-| Visualization          | Recharts plus purpose-built SVG                                                              | Filed financial trends and market context                        |
-| Build and runtime      | TypeScript 5.8, Vite 8, Nitro 3, Cloudflare modules                                          | Compilation, server routes, runtime bindings, edge execution     |
-| Narrative and Q&A      | Google Gemini with configurable Flash-model failover                                          | Filing-grounded writing, independent review, cited follow-ups    |
-| Optional embeddings    | `gemini-embedding-001`                                                                       | Semantic retrieval when explicitly enabled                       |
-| Authoritative evidence | SEC EDGAR submissions, filing HTML, SEC XBRL Company Facts                                   | Entity resolution, source sections, provenance, filed financials |
-| Market snapshot        | Yahoo Finance chart endpoint                                                                 | Prototype price, volume, day range, and 52-week context          |
-| Retrieval              | BM25; optional cosine-ranked Gemini vectors                                                  | Bounded passage selection for follow-up questions                |
-| Memory                 | In-process store; optional Supabase Postgres                                                 | Reviewed brief replay and bounded conversation history           |
-| Verification           | Independent Gemini review, deterministic TypeScript checks, source-derived continuity         | Claim, citation, quote, figure, and outage-safe validation       |
-| Quality                | Node test runner, TypeScript compiler, production build, local and live acceptance harnesses | Regression and release evidence                                  |
+| Layer                | Repository technology                                       | Responsibility                                |
+| -------------------- | ----------------------------------------------------------- | --------------------------------------------- |
+| Application          | React 19, TanStack Start and Router                         | Workspace and server routes                   |
+| Styling and controls | Tailwind CSS 4, Radix UI, Lucide                            | Tokens, layout, reusable controls             |
+| Charts               | Recharts and SVG                                            | Financial and explanatory visuals             |
+| Toolchain            | TypeScript, Vite 8, Nitro 3, Lovable TanStack configuration | Build and Cloudflare-targeted server output   |
+| Inference            | Direct Gemini HTTP requests                                 | Writing, review, answers, optional embeddings |
+| Evidence             | SEC EDGAR and XBRL Company Facts                            | Filing identities, text, reported facts       |
+| Retrieval            | TypeScript BM25 and normalized vectors                      | Lexical and optional hybrid selection         |
+| Persistence          | In-process maps; optional Supabase Postgres                 | Replay and conversation state                 |
+| Verification         | Node test runner, `tsx`, TypeScript, scripted acceptance    | Regression and runtime checks                 |
 
-## Embeddings, vector retrieval, and follow-up answers
-
-Filing sections are divided into overlapping passages and indexed lexically with BM25. The public demo defaults to lexical retrieval so semantic indexing cannot consume the same model quota needed for the writer, reviewer, or advisor’s question. Set `ENABLE_EMBEDDINGS=true` to add Gemini vectors and cosine scoring.
-
-```mermaid
-flowchart LR
-    F["Filing sections"] --> C["Overlapping passages"]
-    C --> B["BM25 index"]
-    C --> E["Gemini embeddings"]
-    E --> V["Cosine vector index"]
-    Q["Advisor question"] --> B
-    Q --> V
-    B --> R["Rank fusion"]
-    V --> R
-    R --> A["Bounded evidence packet"]
-    A --> G["Grounded Gemini answer"]
-```
-
-The vector index is keyed by filing accessions, so a new filing invalidates the old evidence set. Embedding failures never break Q&A: vector scores become unavailable and BM25 remains authoritative. The public deployment keeps vectors in the warm runtime for operational simplicity. The production path is explicit: persist the same vectors in Supabase Postgres with pgvector, add tenant-aware metadata filters, and retain BM25 for hybrid recall and graceful degradation.
-
-For a factual follow-up:
-
-1. retrieve six bounded passages from the same filing corpus;
-2. attach at most six recent conversation turns;
-3. ask Gemini to answer only from those passages;
-4. allow-list returned passage IDs;
-5. locate the evidence quote and reconcile figures;
-6. screen the answer for advice, forecasts, guarantees, and contact language;
-7. display provider/model provenance and linked sources.
-
-“Should I buy this stock?” never reaches Gemini. The deterministic guardrail returns a refusal and redirects the advisor to the filed facts.
-
-## Memory
-
-| State              | Key                               |     Default lifetime | Durable option                      |
-| ------------------ | --------------------------------- | -------------------: | ----------------------------------- |
-| Reviewed briefing  | Ticker + sorted filing accessions |              6 hours | `advisor_briefings` in Supabase     |
-| Conversation turns | Browser session + ticker          |        Last 12 turns | `advisor_conversations` in Supabase |
-| Retrieval index    | Briefing key                      | Warm server instance | Rebuilt from filing sections        |
-
-The default in-process store keeps the public demo deployable without a database. For cross-instance persistence, set `MEMORY_BACKEND=supabase` and apply [the idempotent migration](supabase/migrations/20260919000000_advisor_memory.sql). Row Level Security is enabled, no browser access policy is created, and the service role remains server-only.
-
-Unverified, incomplete, and failed narratives are excluded from replay and from the recent-briefings list.
-
-## Guardrails and failure semantics
-
-Guardrails execute in the request path, not as disclaimer copy added after generation.
-
-- Ticker and question shape validation
-- Per-client rate limits for briefs and follow-ups
-- Rejection of account, card, routing, Social Security, passport, and license identifiers
-- Pre-inference refusal of buy/sell/hold requests, price targets, forecasts, and return predictions
-- Filing text treated as data and scanned for instruction-shaped content
-- Citation allow-listing against sections actually sent to the writer
-- Output screening for advice, forecasts, guarantees, and contact language
-- Full-text quote location and filing-unit figure reconciliation
-- Unsupported-claim hold policy
-- Vendor-neutral browser errors with provider details restricted to server logs
-- Source-derived narrative recovery when Gemini generation or independent review fails
-
-The continuity brief and Filing Digest are not simulated AI responses. Their facts, excerpts, recent 8-K timeline, filing list, links, and timestamps are assembled directly from EDGAR and XBRL. The UI labels this mode **Source verified** so it cannot be confused with Gemini output.
-
-## Secret boundary
-
-Runtime configuration is deliberately absent from Git.
-
-- `.env`, `.env.*`, private keys, and certificate bundles are ignored.
-- `.env.example` contains names and safe defaults only.
-- `npm run security:secrets` rejects tracked runtime files and common credential signatures.
-- The Gemini key and optional Supabase service-role key belong only in encrypted server bindings or an ignored `.env.local` file.
-- Supabase publishable keys are not privileged, but live project configuration is still kept out of the tracked tree.
-
-See [SECURITY.md](SECURITY.md) for the disclosure and rotation policy.
+[`package.json`](package.json) declares package ranges; [`bun.lock`](bun.lock) records the resolved set. Model defaults are repository configuration, not a promise of availability for every account.
 
 ## Local development
 
-Prerequisites: Node.js 22 or later and a Google AI Studio Gemini API key.
+Use a current Node.js 22 release compatible with the locked toolchain and Bun for the committed lockfile. Generated narrative and Q&A need a Gemini credential; source-only behavior can be inspected without one. SEC and market requests require network access.
 
 ```bash
 git clone https://github.com/iamestime/ai-prototype-advisor-brief.git
 cd ai-prototype-advisor-brief
-npm install
+bun install --frozen-lockfile
 cp .env.example .env.local
 ```
 
-Set `GEMINI_API_KEY` in `.env.local`, then run:
+Edit `.env.local`, set server-side `GEMINI_API_KEY`, and replace `EDGAR_USER_AGENT` with an appropriate deployment contact identity. Start the application:
 
 ```bash
-npm run dev
+npm run dev -- --port 5173
 ```
 
-Never prefix the Gemini key or Supabase service-role key with `VITE_`.
+Use the printed URL if your environment selects another port. Never prefix a Gemini or Supabase service-role key with `VITE_`; that prefix belongs to client build configuration.
 
-### Configuration
+For durable memory, review and apply the [existing migration](supabase/migrations/20260919000000_advisor_memory.sql) to a project you control, then set `MEMORY_BACKEND=supabase`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`. Inspect the reported backend: a failed initial table probe selects local memory for that instance.
 
-| Variable                    | Required               | Default                           | Purpose                                              |
-| --------------------------- | ---------------------- | --------------------------------- | ---------------------------------------------------- |
-| `GEMINI_API_KEY`            | For narrative features | None                              | Server-only Gemini credential                        |
-| `GEMINI_BASE_URL`           | No                     | Google OpenAI-compatible endpoint | Direct Gemini transport                              |
-| `AI_MODEL`                  | No                     | `gemini-3.8-flash`                | Writer and follow-up model                           |
-| `AI_FALLBACK_MODELS`        | No                     | Stable Gemini Flash ladder          | Capacity and model-availability failover             |
-| `VALIDATOR_MODEL`           | No                     | `gemini-3.8-flash`                | Independent reviewer model                           |
-| `AI_MAX_ATTEMPTS`           | No                     | `4`                               | Bounded attempts for retryable calls; capped at five |
-| `AI_CALL_GAP_MS`            | No                     | `750`                             | Gap between writer completion and independent review |
-| `VALIDATION_POLICY`         | No                     | `exclude`                         | Hold or flag unsupported claims                      |
-| `UNVERIFIED_POLICY`         | No                     | `hide`                            | Hide claims without a completed review               |
-| `ENABLE_EMBEDDINGS`         | No                     | `false`                           | Add Gemini vectors to BM25 retrieval                 |
-| `EMBED_MODEL`               | With embeddings        | `gemini-embedding-001`            | Semantic retrieval model                             |
-| `EDGAR_USER_AGENT`          | Recommended            | Project contact page              | SEC-compliant request identity                       |
-| `MEMORY_BACKEND`            | No                     | `memory`                          | `memory` or `supabase`                               |
-| `SUPABASE_URL`              | With durable memory    | None                              | Server-side Supabase project URL                     |
-| `SUPABASE_SERVICE_ROLE_KEY` | With durable memory    | None                              | Server-only memory-table access                      |
-| `DEBUG_ERRORS`              | No                     | `false`                           | Internal diagnostics; keep false publicly            |
+## Configuration
 
-Timeouts, rate limits, and memory TTL are documented in [.env.example](.env.example).
+[`config.ts`](src/server/advisor/config.ts) is authoritative; [`.env.example`](.env.example) is the starting template. Runtime bindings override process environment values.
+
+### Models and pacing
+
+| Variable             | Repository default                                             | Purpose                                                              |
+| -------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `GEMINI_API_KEY`     | Unset                                                          | Server credential                                                    |
+| `GEMINI_BASE_URL`    | `https://generativelanguage.googleapis.com/v1beta/openai`      | Direct transport; smoke harness substitutes a local mock             |
+| `AI_MODEL`           | `gemini-3.8-flash`                                             | Requested writer/follow-up model                                     |
+| `AI_FALLBACK_MODELS` | `gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Ordered chat candidates after deduplication                          |
+| `VALIDATOR_MODEL`    | `gemini-3.8-flash`                                             | Requested reviewer                                                   |
+| `EMBED_MODEL`        | `gemini-embedding-001`                                         | Optional embedding model                                             |
+| `ENABLE_EMBEDDINGS`  | `false`                                                        | Enable semantic retrieval                                            |
+| `AI_MAX_ATTEMPTS`    | `4`                                                            | Attempt setting, capped at five and further limited for chat ladders |
+| `AI_CALL_GAP_MS`     | `750`                                                          | Pause before review, capped at 5,000 ms                              |
+
+Choose model IDs available to your account. Some response metadata uses the requested model name even after fallback; it is not a complete record of the actual model serving every stage.
+
+### Policies and state
+
+| Variable                    | Default                      | Purpose                                          |
+| --------------------------- | ---------------------------- | ------------------------------------------------ |
+| `VALIDATION_POLICY`         | `exclude`                    | Hold unsupported claims; optional `flag`         |
+| `UNVERIFIED_POLICY`         | `hide`                       | Hide unverified claims; optional `flag`          |
+| `RESEARCH_TIMEOUT_MS`       | `120000`                     | Writer attempt timeout                           |
+| `VALIDATOR_TIMEOUT_MS`      | `75000`                      | Reviewer attempt timeout                         |
+| `ASK_TIMEOUT_MS`            | `60000`                      | Answer attempt timeout                           |
+| `EMBED_TIMEOUT_MS`          | `30000`                      | Embedding attempt timeout                        |
+| `RATE_LIMIT_BRIEFS_PER_10M` | `12`                         | Local briefing rate bucket                       |
+| `RATE_LIMIT_ASKS_PER_10M`   | `40`                         | Local question rate bucket                       |
+| `MEMORY_TTL_MS`             | `21600000`                   | Replay TTL, not a conversation-deletion policy   |
+| `MEMORY_BACKEND`            | In-process unless `supabase` | Briefing/conversation adapter                    |
+| `SUPABASE_URL`              | Unset                        | Optional database endpoint                       |
+| `SUPABASE_SERVICE_ROLE_KEY` | Unset                        | Privileged server-only memory credential         |
+| `EDGAR_USER_AGENT`          | Project contact identity     | SEC request identification                       |
+| `DEBUG_ERRORS`              | `false`                      | Extra diagnostic details; keep disabled publicly |
+
+`GEMINI_MODEL` is an alternate model input. Key lookup also accepts `GOOGLE_GENERATIVE_AI_API_KEY` and `GOOGLE_API_KEY`. Optional `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` configure browser integration, not the privileged memory adapter.
 
 ## Verification
 
+The focused tests and two acceptance harnesses have different scopes. Passing one does not establish the others.
+
 ```bash
-npm run security:secrets
 npm test
 npm run typecheck
 npm run build
-npm run test:smoke
 ```
 
-The GitHub Actions quality gate runs secret scanning, tests, type-checking, and the production build on every push to `main` and every pull request.
+`npm test` runs tracked-file secret checking and then the Node suite with the installed `tsx` loader. [GitHub Actions](.github/workflows/quality.yml) installs from `bun.lock` and runs secret checking, tests, type-checking, and a build on pull requests and `main` pushes.
 
-The focused suite covers runtime-binding discovery, Gemini-only provider selection, model failover after throttling, bounded writer context, arbitrary streaming chunk boundaries, fenced and formatted JSON, citation allow-listing, internal-markup removal, empty-block rejection, source-derived continuity, compact evidence selection, one-call whole-brief review, filing-unit figure reconciliation, quote location, and dark-first rendering.
+| Test                                                               | Focus                                                                                        |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| [`research-parser.test.ts`](tests/research-parser.test.ts)         | Context limits, schemas, stream boundaries, empty blocks, invented citations, markup cleanup |
+| [`validation.test.ts`](tests/validation.test.ts)                   | Scale/rounding examples, quote location, evidence windows, whole-brief review                |
+| [`gemini-transport.test.ts`](tests/gemini-transport.test.ts)       | Throttling, model fallback, local streamed fixtures                                          |
+| [`deterministic-brief.test.ts`](tests/deterministic-brief.test.ts) | Source-derived six-block constructor with fixture data                                       |
+| [`runtime-config.test.ts`](tests/runtime-config.test.ts)           | Runtime binding precedence and provider selection                                            |
+| [`theme.test.ts`](tests/theme.test.ts)                             | Dark-first initialization and persisted light selection                                      |
 
-`npm run test:smoke` starts a local Gemini-compatible service while retaining the real SEC and market-data pipeline. It proves six streamed blocks, completed independent validation, optional hybrid retrieval, a sourced Gemini follow-up, and a pre-inference recommendation refusal.
+These are regression checks, not a labeled financial-research benchmark. They do not establish exhaustive issuer coverage, adversarial robustness, accessibility conformance, or production latency.
 
-After a release reaches the public deployment:
+### Local integration smoke
+
+```bash
+bash scripts/smoke-local.sh
+```
+
+Explicit `bash` works with the script's currently tracked nonexecutable mode. The harness starts a Gemini-compatible mock and the application, while retaining real SEC and market requests. It checks streamed blocks, review output, optional hybrid retrieval, a sourced answer, and refusal behavior. It is neither offline nor a test of live Gemini quality.
+
+### Live acceptance
 
 ```bash
 npm run test:live
 ```
 
-The live acceptance harness runs fresh briefings for LLY, BA, NVDA, and ORCL, requires six blocks and a completed Gemini review for each, checks for a numeric evidence-coverage score, verifies one factual cited follow-up, and confirms that a recommendation request is refused without inference.
+[`live-acceptance.mjs`](scripts/live-acceptance.mjs) defaults to the linked deployment and fresh briefings for `LLY`, `BA`, `NVDA`, and `ORCL`. It expects six block names, a completed Gemini review, numeric evidence coverage, a sourced factual answer, and a recommendation refusal before inference. `LIVE_BASE_URL`, `LIVE_TICKERS`, and `LIVE_COOLDOWN_MS` customize the run.
 
-## Repository map
+This harness makes real requests and may incur inference costs. Source-derived fallback intentionally does not count as a successful Gemini-review acceptance result. The run tests the serving deployment, not automatically the local checkout.
 
-```text
-src/server.ts                                Cloudflare/Nitro runtime-binding entry
-src/routes/index.tsx                         Advisor workspace and streaming client
-src/routes/api/public/advisor-brief.ts       Quota-aware briefing orchestrator
-src/routes/api/public/advisor-ask.ts         Gemini filing-grounded follow-up Q&A
-src/routes/api/public/advisor-memory.ts      Reviewed memory and conversation API
-src/server/runtime-env.ts                    Server-only environment bridge
-src/server/advisor/edgar.ts                  SEC, XBRL, market, and section extraction
-src/server/advisor/research.ts               Narrative writer and brace-aware stream parser
-src/server/advisor/validation.ts             Compact independent review and deterministic checks
-src/server/advisor/retrieval.ts              Passage chunking, BM25, optional embeddings
-src/server/advisor/guardrails.ts              Input, source, output, and compliance controls
-src/server/advisor/memory.ts                 In-process and Supabase memory adapters
-src/server/advisor/digest.ts                 SEC/XBRL digest and source-derived continuity brief
-scripts/check-secrets.mjs                    Tracked-tree credential gate
-scripts/live-acceptance.mjs                  Four-ticker production acceptance matrix
-supabase/migrations/                         Optional durable-memory schema
-tests/                                       Focused regression suite
-docs/Advisor_Brief__Deck.pptx                Product and pilot presentation
-```
+## Security boundaries
 
-## Deployment contract
+Keep credentials in ignored local environment files or protected server runtime bindings. Gemini credentials and the optional service-role key are read server-side. [SECURITY.md](SECURITY.md) covers reporting and handling; [`check-secrets.mjs`](scripts/check-secrets.mjs) checks tracked files for prohibited runtime files and common credential signatures.
 
-1. GitHub `main` is the source of truth. Release a reviewed commit without editing through Lovable.
-2. Configure `GEMINI_API_KEY` as an encrypted server runtime binding.
-3. Run the secret, unit, type, build, and local smoke gates.
-4. Confirm the connected deployment is serving the release asset, not merely that GitHub accepted the commit.
-5. Run the four-ticker live acceptance matrix.
-6. Inspect one claim’s filing link, quote, figures, accession, and fetch time.
-7. Ask one factual question and one prohibited recommendation question.
-8. Confirm dark mode before hydration in a clean browser profile.
+Implemented controls include input validation, regex-based sensitive-data and advice detection, source-line sanitization, citation allow-listing, output screening, and local rate limiting. They address specific failure modes but do not establish complete prompt-injection, personal-data, or recommendation detection.
 
-## Productionization boundary
+The public routes have permissive CORS and no authenticated advisor requirement. Local rate limits do not coordinate replicas; SEC request pacing is not deployment-wide concurrency control. Server-only database credentials do not turn client-selected session keys into authorization. Use public, nonconfidential inputs for this exercise.
 
-The public prototype favors inspectability and fast client learning. A regulated production deployment would additionally require authenticated advisor identities, tenant isolation, licensed market data, centralized rate limiting, durable provider queues, immutable audit retention, formal model-risk approval, versioned prompts and evaluation datasets, distributed tracing, SLOs, disaster recovery, accessibility certification, penetration testing, and compliance-owned retention policies.
+## Production work still required
 
-The current repository should not be represented as satisfying those controls.
+The next steps should make these boundaries enforceable under concurrent users, incomplete evidence, and independently measured failures.
 
-## Presentation
+| Area                    | Current boundary                                                | Production acceptance criterion                                                      |
+| ----------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Identity                | Public routes; client-selected sessions                         | Authenticated users, tenant-scoped memory access tests                               |
+| Publication             | Blocks can appear before review                                 | Explicit staging/release for content requiring prior verification                    |
+| Provenance              | Fallback assigns verification states; some links are contextual | Typed XBRL fact references; distinct generated/extracted/calculated validation       |
+| Review quality          | Same model family; heuristic checks                             | Labeled claims, issuer diversity, adversarial evaluation, false-support measurements |
+| Filing coverage         | Selected forms, heuristic extraction, truncation                | Measured coverage, amendments, unsupported-issuer behavior                           |
+| Retrieval               | Fixed weights; no relevance threshold                           | Evaluated recall, abstention, versioned indexes                                      |
+| Budgets                 | Per-attempt deadlines and local pacing                          | Global deadlines, cancellation, distributed quotas, spend accounting                 |
+| Memory                  | Nontransactional appends; fallback summary edge case            | Atomic writes, retention, final-state replay, concurrency tests                      |
+| Observability           | Partial usage/model metadata                                    | Actual served model IDs, full usage, traces, SLOs, recovery exercises                |
+| Market data             | Prototype endpoint                                              | Approved feed, freshness policy, unavailable/stale behavior                          |
+| Delivery and governance | Demonstration controls, focused tests                           | Security review, accessibility evaluation, model-risk ownership, retention approval  |
 
-The eight-slide [Advisor Brief product deck](docs/Advisor_Brief__Deck.pptx) covers the advisor problem, one-minute workflow, evidence model, follow-up memory, guardrails, operating impact, and proposed four-week pilot.
+An adapter, prompt, or configuration option alone does not establish that these criteria are met.
+
+## Repository guide
+
+| Path                                                                                                              | Responsibility                                          |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| [`src/routes/index.tsx`](src/routes/index.tsx)                                                                    | Workspace, streaming client, claim policies, follow-ups |
+| [`src/routes/api/public/advisor-brief.ts`](src/routes/api/public/advisor-brief.ts)                                | Orchestration, fallback, SSE, replay                    |
+| [`src/routes/api/public/advisor-ask.ts`](src/routes/api/public/advisor-ask.ts)                                    | Retrieved answers and conversation updates              |
+| [`src/routes/api/public/advisor-memory.ts`](src/routes/api/public/advisor-memory.ts)                              | Recent briefings and conversation reads                 |
+| [`src/server/advisor/edgar.ts`](src/server/advisor/edgar.ts)                                                      | SEC, extraction, XBRL periods, quotes                   |
+| [`src/server/advisor/research.ts`](src/server/advisor/research.ts)                                                | Context, block contracts, parsing, regeneration         |
+| [`src/server/advisor/validation.ts`](src/server/advisor/validation.ts)                                            | Evidence preparation, review, checks, summaries         |
+| [`src/server/advisor/retrieval.ts`](src/server/advisor/retrieval.ts)                                              | Chunks, BM25, vectors, score fusion                     |
+| [`src/server/advisor/memory.ts`](src/server/advisor/memory.ts)                                                    | In-process and Postgres adapters                        |
+| [`src/server/advisor/guardrails.ts`](src/server/advisor/guardrails.ts)                                            | Input, source, output, rate checks                      |
+| [`src/server/advisor/digest.ts`](src/server/advisor/digest.ts)                                                    | Filing Digest and continuity construction               |
+| [`src/server/advisor/config.ts`](src/server/advisor/config.ts), [`providers.ts`](src/server/advisor/providers.ts) | Runtime settings and model transport                    |
+| [`src/server.ts`](src/server.ts), [`runtime-env.ts`](src/server/runtime-env.ts)                                   | Server entry and binding bridge                         |
+| [`supabase/migrations/`](supabase/migrations/)                                                                    | Optional memory schema                                  |
+| [`scripts/`](scripts/), [`tests/`](tests/)                                                                        | Secret gate, regression tests, acceptance harnesses     |
+| [`docs/readme/`](docs/readme/)                                                                                    | Editable light-mode SVGs and their generator            |
+
+## Deployment and change discipline
+
+The connected application builds from GitHub. [`AGENTS.md`](AGENTS.md) requires preserving published history; use additive commits and reviewed merges. The Nitro target comes from [`vite.config.ts`](vite.config.ts) and the installed TanStack configuration.
+
+For runtime releases, verify the locked install, tests, type-check, build, and relevant integration gates; configure server secrets; then inspect the served deployment and live behavior. A merged commit is not proof that hosting finished. Documentation-only changes can be reviewed through rendered assets, links, and source checks without an inference acceptance run.
 
 ## Project lead
 
 **Estimé Aristomene, Jr.**<br>
-Managing Director, Principal Engineer at AiQorx<br>
-[Contact AiQorx](https://aiqorx.com/contact)
+Managing Director, Principal Engineer · **AiQorx**<br>
+[GitHub](https://github.com/iamestime) · [Contact AiQorx](https://aiqorx.com/contact)
+
+Advisor Brief is a public exercise in product judgment, applied AI, and software architecture. The code, design reference, and [presentation](docs/Advisor_Brief__Deck.pptx) let reviewers examine the decisions, reproduce the workflow, and challenge the tradeoffs.

@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1060" viewBox="0 0 1120 1060" role="img" aria-labelledby="title description">
+<title id="title">Generated claim review</title><desc id="description">The generated-claim path checks citations, obtains a separate model review, and reconciles quotes and figures before applying a display policy. Source-derived output has different semantics.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#73889C" stroke-width="1.5"/></marker></defs>
+<rect x="1" y="1" width="1118" height="1058" rx="20" fill="#FFFFFF" stroke="#D6E1E7"/>
+<g font-family="DejaVu Sans, Arial, sans-serif">
+<text x="48" y="45" font-size="14" fill="#086C64" font-weight="700">ADVISOR BRIEF  /  02</text>
+<text x="48" y="86" font-size="31" fill="#172B45" font-weight="700">A citation is the beginning of the check</text>
+<text x="48" y="116" font-size="17" fill="#52657A" font-weight="400">Review model output against retained evidence, then make the verdict visible.</text>
+<rect x="64" y="153" width="992" height="100" rx="12" fill="#EFF3FC" stroke="#D6E1E7"/>
+<text x="87" y="190" font-size="22" fill="#172B45" font-weight="700">Generated claim + section IDs</text>
+<text x="87" y="223" font-size="19" fill="#52657A" font-weight="400">Remove unknown citation IDs. Preserve the claim for explicit review.</text>
+<path d="M560 253 V275 H301 V296" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="64" y="297" width="474" height="123" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="87" y="334" font-size="22" fill="#172B45" font-weight="700">Claim-specific evidence</text>
+<text x="87" y="367" font-size="19" fill="#52657A" font-weight="400">Select relevant windows from cited text.</text>
+<text x="87" y="396" font-size="19" fill="#52657A" font-weight="400">Retain section metadata and source links.</text>
+<rect x="558" y="297" width="498" height="123" rx="12" fill="#EAF6F2" stroke="#D6E1E7"/>
+<text x="581" y="334" font-size="22" fill="#172B45" font-weight="700">Separate Gemini review</text>
+<text x="581" y="367" font-size="19" fill="#52657A" font-weight="400">Return verdict, evidence quote, and reason.</text>
+<text x="581" y="396" font-size="19" fill="#52657A" font-weight="400">Separate invocation; same default model.</text>
+<path d="M538 354 H557" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M807 420 V450 H560 V476" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="64" y="477" width="992" height="130" rx="12" fill="#FFFFFF" stroke="#D6E1E7"/>
+<text x="87" y="514" font-size="22" fill="#172B45" font-weight="700">Deterministic reconciliation</text>
+<text x="87" y="547" font-size="19" fill="#52657A" font-weight="400">Quote: normalized containment and tolerant token matching.</text>
+<text x="87" y="576" font-size="19" fill="#52657A" font-weight="400">Figures: scale-aware numeric matching with rounding tolerance.</text>
+<path d="M560 607 V650" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="383" y="651" width="354" height="72" rx="12" fill="#EAF6F2" stroke="#D6E1E7"/>
+<text x="421" y="696" font-size="23" fill="#172B45" font-weight="700">Apply verdict + policy</text>
+<path d="M450 723 V747 H223 V778" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M560 723 V778" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M670 723 V747 H897 V778" fill="none" stroke="#73889C" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="64" y="779" width="316" height="129" rx="12" fill="#EAF6F2" stroke="#D6E1E7"/>
+<text x="87" y="816" font-size="22" fill="#172B45" font-weight="700">Display</text>
+<text x="87" y="849" font-size="19" fill="#52657A" font-weight="400">Supported by this pipeline</text>
+<text x="87" y="878" font-size="19" fill="#52657A" font-weight="400">Evidence remains inspectable</text>
+<rect x="402" y="779" width="316" height="129" rx="12" fill="#FFF5E5" stroke="#D6E1E7"/>
+<text x="425" y="816" font-size="22" fill="#172B45" font-weight="700">Flag</text>
+<text x="425" y="849" font-size="19" fill="#52657A" font-weight="400">Partial or uncited</text>
+<text x="425" y="878" font-size="19" fill="#52657A" font-weight="400">Visible review state</text>
+<rect x="740" y="779" width="316" height="129" rx="12" fill="#FFF0EE" stroke="#D6E1E7"/>
+<text x="763" y="816" font-size="22" fill="#172B45" font-weight="700">Hold by default</text>
+<text x="763" y="849" font-size="19" fill="#52657A" font-weight="400">Unsupported or unverified</text>
+<text x="763" y="878" font-size="19" fill="#52657A" font-weight="400">Inspect in the review area</text>
+<rect x="64" y="947" width="992" height="73" rx="12" fill="#F7F9FB" stroke="#D6E1E7"/>
+<text x="86" y="977" font-size="17" fill="#52657A" font-weight="400">Source-derived fallback is a separate construction path, not this complete review.</text>
+<text x="86" y="1002" font-size="17" fill="#52657A" font-weight="400">A supported verdict is not an accuracy guarantee. Text may stream before review.</text>
+</g></svg>
